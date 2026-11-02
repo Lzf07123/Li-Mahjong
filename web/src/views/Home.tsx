@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { emitAck, api, saveSession, saveName, lastName } from '../socket';
+import { emitRoomAck, api, getUid, saveSession, saveName, lastName, type MeInfo } from '../socket';
 import { useApp } from '../App';
 import { fmtTime, scoreColor } from '../components/common';
 import type { HistoryItem, StatsItem } from '../types';
@@ -15,10 +15,17 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState<StatsItem[] | null>(null);
   const [recent, setRecent] = useState<HistoryItem[] | null>(null);
+  const [me, setMe] = useState<MeInfo | null>(null);
 
   useEffect(() => {
     api.stats().then((r) => setStats(r.items)).catch(() => setStats([]));
     api.history().then((r) => setRecent(r.items.slice(0, 3))).catch(() => setRecent([]));
+    // 设备身份：带 uid 查询我的档案（欢迎回来）
+    const uid = getUid();
+    api
+      .me(uid)
+      .then((m) => setMe(m.name ? m : null))
+      .catch(() => {});
   }, []);
 
   const enter = async () => {
@@ -28,14 +35,14 @@ export default function Home() {
     setBusy(true);
     try {
       if (mode === 'create') {
-        const r = await emitAck('room:create', { name: n });
+        const r = await emitRoomAck('room:create', { name: n });
         saveSession(r.code as string, { playerId: r.playerId as string, token: r.token as string, name: n });
         setMyId(r.playerId as string);
         go({ name: 'room', code: r.code as string });
       } else {
         const c = code.trim().toUpperCase();
         if (!/^[A-Z2-9]{4}$/.test(c)) return toast('房间码是 4 位字母数字', 'error');
-        const r = await emitAck('room:join', { code: c, name: n });
+        const r = await emitRoomAck('room:join', { code: c, name: n });
         saveSession(c, { playerId: r.playerId as string, token: r.token as string, name: n });
         setMyId(r.playerId as string);
         go({ name: 'room', code: c });
@@ -86,6 +93,21 @@ export default function Home() {
           </div>
 
           <label className="mb-1.5 block text-xs font-semibold text-white/60">我的昵称</label>
+          {me && (
+            <div className="mb-2 flex items-center gap-2 rounded-xl border border-gold/25 bg-gold/[0.07] px-3 py-2 text-xs">
+              <span>👋</span>
+              <span className="font-bold text-gold">{me.name}</span>
+              <span className="text-white/50">
+                {me.games} 场 · 生涯{' '}
+                <b className={scoreColor(me.total)}>
+                  {me.total > 0 ? '+' : ''}
+                  {me.total}
+                </b>{' '}
+                · 赢 {me.wins}
+              </span>
+              <span className="ml-auto text-[10px] text-white/35">本设备已记住你</span>
+            </div>
+          )}
           <input
             className="input"
             placeholder="牌桌上的外号"
@@ -185,6 +207,12 @@ export default function Home() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="mt-6 text-center">
+        <button className="text-[11px] font-semibold text-white/30 hover:text-white/60" onClick={() => go({ name: 'admin' })}>
+          ⚙️ 管理后台
+        </button>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../App';
-import { clearSession, emitAck, loadSession, saveSession, saveName } from '../socket';
+import { clearSession, emitAck, emitRoomAck, loadSession, saveSession, saveName } from '../socket';
 import type { PlayerView } from '../types';
 import { Avatar, ConfirmButton, SeatBadge, SEATS, Sheet } from '../components/common';
 import { CardWall, DrawOverlay, MyCard } from '../components/Cards';
@@ -48,7 +48,7 @@ export default function Room({ code }: { code: string }) {
     saveName(n);
     setBusy(true);
     try {
-      const r = await emitAck('room:join', { code, name: n });
+      const r = await emitRoomAck('room:join', { code, name: n });
       saveSession(code, { playerId: r.playerId as string, token: r.token as string, name: n });
       setMyId(r.playerId as string);
       setPhase('ready');

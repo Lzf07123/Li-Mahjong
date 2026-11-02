@@ -6,9 +6,15 @@ import { fileURLToPath } from 'node:url';
 import type { CardDef, Category, Player, Room, ScoreEntry, Snapshot } from './types.js';
 import * as dbi from './db.js';
 
-const SEATS = ['东', '南', '西', '北', '中', '发', '白', '春'];
+const SEATS = ['东', '南', '西', '北'];
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 规范化客户端上传的设备 uid */
+function normUid(v: unknown): string | null {
+  const s = String(v ?? '').trim().slice(0, 64);
+  return /^[A-Za-z0-9_-]{6,64}$/.test(s) ? s : null;
+}
 
 interface BuiltinData {
   cards: CardDef[];
@@ -68,7 +74,10 @@ export class RoomManager {
           this.expire(room);
           continue;
         }
-        for (const p of room.players) p.connected = false;
+        for (const p of room.players) {
+          p.connected = false;
+          p.uid ??= null;
+        }
         this.rooms.set(room.code, room);
       } catch {
         dbi.deleteLiveRoom(row.code);
@@ -87,7 +96,7 @@ export class RoomManager {
       dbi.finalizeGame(
         room.gameId,
         'abandoned',
-        room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId })),
+        room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null })),
       );
     }
     dbi.deleteLiveRoom(room.code);
@@ -133,6 +142,7 @@ export class RoomManager {
       hostId: room.hostId,
       players: room.players.map((p) => ({
         id: p.id,
+        uid: p.uid ?? null,
         name: p.name,
         seat: p.seat,
         score: p.score,
@@ -208,13 +218,16 @@ export class RoomManager {
 
   // ---------- 连接处理 ----------
   register(socket: Socket): void {
-    socket.on('room:create', (payload: { name?: string }, ack?: Ack) => {
+    socket.on('room:create', (payload: { name?: string; uid?: string }, ack?: Ack) => {
       const name = String(payload?.name ?? '').trim().slice(0, 12);
       if (!name) return ack?.({ ok: false, error: '请先填写昵称' });
+      const uid = normUid(payload?.uid);
+      if (uid) dbi.upsertUser(uid, name);
       const code = this.genCode();
       const host: Player = {
         id: randomUUID(),
         token: randomUUID(),
+        uid,
         name,
         seat: SEATS[0],
         score: 0,
@@ -245,20 +258,38 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('room:join', (payload: { code?: string; name?: string }, ack?: Ack) => {
+    socket.on('room:join', (payload: { code?: string; name?: string; uid?: string }, ack?: Ack) => {
       const code = String(payload?.code ?? '').trim().toUpperCase();
       const name = String(payload?.name ?? '').trim().slice(0, 12);
       if (!name) return ack?.({ ok: false, error: '请先填写昵称' });
       const room = this.roomByCode(code);
       if (!room) return ack?.({ ok: false, error: '房间不存在，可能已结束或已过期' });
-      if (room.players.length >= SEATS.length) return ack?.({ ok: false, error: '房间已满' });
+      const uid = normUid(payload?.uid);
+      if (uid) dbi.upsertUser(uid, name);
+      // 同一设备身份已在房间中（如换了浏览器标签/清了会话）：直接回合，不再新增玩家
+      const existing = uid ? room.players.find((p) => p.uid === uid) : undefined;
+      if (existing) {
+        existing.name = name;
+        existing.token = randomUUID();
+        existing.connected = true;
+        socket.data.playerId = existing.id;
+        socket.data.code = code;
+        socket.join(code);
+        ack?.({ ok: true, code, playerId: existing.id, token: existing.token, rebound: true });
+        this.broadcastRoom(room);
+        return;
+      }
+      if (room.players.length >= SEATS.length) return ack?.({ ok: false, error: '房间已满（4人）' });
       if (room.players.some((p) => p.name === name))
         return ack?.({ ok: false, error: '昵称已被使用，换一个吧' });
+      const used = new Set(room.players.map((p) => p.seat));
+      const seat = SEATS.find((s) => !used.has(s)) ?? SEATS[0];
       const player: Player = {
         id: randomUUID(),
         token: randomUUID(),
+        uid,
         name,
-        seat: SEATS[room.players.length % SEATS.length],
+        seat,
         score: 0,
         connected: true,
         card: null,
@@ -487,7 +518,7 @@ export class RoomManager {
     socket.on('game:end', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
-      const standings = room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId }));
+      const standings = room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null }));
       if (room.gameId) dbi.finalizeGame(room.gameId, 'finished', standings);
       dbi.deleteLiveRoom(room.code);
       this.rooms.delete(room.code);
@@ -503,7 +534,7 @@ export class RoomManager {
         dbi.finalizeGame(
           room.gameId,
           'abandoned',
-          room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId })),
+          room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null })),
         );
       }
       dbi.deleteLiveRoom(room.code);

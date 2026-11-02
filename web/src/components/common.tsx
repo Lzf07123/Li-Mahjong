@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { Category, PlayerView } from '../types';
 
-export const SEATS = ['东', '南', '西', '北', '中', '发', '白', '春'];
+export const SEATS = ['东', '南', '西', '北'];
 
 export const SEAT_COLORS: Record<string, string> = {
   东: 'bg-rose-500 text-white',

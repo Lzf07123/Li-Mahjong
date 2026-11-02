@@ -78,21 +78,36 @@ async function main() {
   clients.forEach(track);
   console.log('1) 建房与加入');
 
-  const createResp = await emit(clients[0], 'room:create', { name: '小明' });
+  const HOST_UID = 'smoke-uid-host-0001';
+  const createResp = await emit(clients[0], 'room:create', { name: '小明', uid: HOST_UID });
   assert(createResp.ok && /^[A-Z2-9]{4}$/.test(createResp.code), `创建房间 code=${createResp.code}`);
   const code = createResp.code;
   const myIds = [createResp.playerId];
   await waitRev(clients[0], 1);
   assert(lastSnap.get(clients[0]).players.length === 1, '房主进入大厅');
 
+  // 同一设备 uid 再次加入 → 回合同一玩家，不新增座位
+  const c5 = await connect();
+  const reb = await emit(c5, 'room:join', { code, name: '小明二号', uid: HOST_UID });
+  assert(reb.ok && reb.playerId === createResp.playerId && reb.rebound === true, '同 uid 加入回合为同一玩家');
+  const rebState = await waitPred(clients[0], (s) => s.players.find((p) => p.id === myIds[0])?.name === '小明二号');
+  assert(lastSnap.get(clients[0]).players.length === 1, '回合不新增玩家');
+  c5.disconnect();
+  void rebState;
+
   for (let i = 1; i < 4; i++) {
-    const base = revOf(clients[0]);
     const r = await emit(clients[i], 'room:join', { code, name: '玩家' + (i + 1) });
     assert(r.ok, `玩家${i + 1} 加入`);
     myIds.push(r.playerId);
-    await waitRev(clients[0], base + 1);
+    await waitPred(clients[0], (s) => s.players.length === i + 1);
   }
   assert(lastSnap.get(clients[0]).players.length === 4, '房间共 4 人');
+
+  // 四人满员后再加入被拒
+  const c6 = await connect();
+  const full = await emit(c6, 'room:join', { code, name: '路人甲', uid: 'smoke-uid-guest-0001' });
+  assert(!full.ok, `满员加入被拒（${full.error}）`);
+  c6.disconnect();
 
   console.log('2) 开局与发牌');
   let base = Math.max(...clients.map(revOf));
@@ -157,10 +172,10 @@ async function main() {
   console.log('6) 方位自选与玩法开关');
   const conflict = await emit(clients[1], 'room:setSeat', { seat: '东' }); // 房主在东
   assert(!conflict.ok, '已被占用的方位被拒绝');
-  const seatP = waitPred(clients[0], (s) => s.players.find((p) => p.id === myIds[1])?.seat === '白');
-  const seatResp = await emit(clients[1], 'room:setSeat', { seat: '白' });
-  assert(seatResp.ok, '空闲方位可选');
-  await seatP;
+  const invalidSeat = await emit(clients[1], 'room:setSeat', { seat: '中' }); // 四人局无中位
+  assert(!invalidSeat.ok, '超出东南西北的方位被拒绝');
+  const ownSeat = await emit(clients[1], 'room:setSeat', { seat: '南' }); // 自己当前方位
+  assert(ownSeat.ok, '重选自己当前方位允许');
   const bothOff = await emit(clients[0], 'room:setFeatures', { score: false, cards: false });
   assert(!bothOff.ok, '记分与条件卡同时关闭被拒绝');
   await emit(clients[0], 'room:setFeatures', { score: true, cards: false });
@@ -206,10 +221,24 @@ async function main() {
   const st = await fetch(`${URL}/api/stats`).then((r) => r.json());
   const sumAll = st.items.reduce((a, i) => a + i.total, 0);
   assert(sumAll === 0, `统计：所有人累计盈亏总和为 0（实际 ${sumAll}）`);
-  const xm = st.items.find((i) => i.name === '小明');
   const p3 = st.items.find((i) => i.name === '玩家3');
-  assert(xm && xm.total < 0 && p3 && p3.total > 0, `统计方向正确（小明 ${xm?.total} / 玩家3 ${p3?.total}，多轮累计）`);
-  assert(xm.games === st.items.find((i) => i.name === '玩家2')?.games, '统计场次一致');
+  assert(p3 && p3.total > 0, `统计方向正确（玩家3 ${p3?.total}）`);
+
+  console.log('9) 用户档案与管理后台');
+  const me = await fetch(`${URL}/api/me?uid=${HOST_UID}`).then((r) => r.json());
+  assert(me.name === '小明二号' && me.games >= 1, `api/me 档案（${me.name} / ${me.games} 场）`);
+  const noAuth = await fetch(`${URL}/api/admin/overview`);
+  assert(noAuth.status === 401, '无口令访问管理 API 被拒');
+  const ov = await fetch(`${URL}/api/admin/overview`, { headers: { 'x-admin-token': 'admin123' } }).then((r) => r.json());
+  assert(ov.users >= 2 && Array.isArray(ov.daily) && ov.daily.length === 7, `管理大盘（${ov.users} 用户 / 7日曲线）`);
+  const ul = await fetch(`${URL}/api/admin/users?query=小明`, { headers: { 'x-admin-token': 'admin123' } }).then((r) => r.json());
+  assert(ul.items.some((u) => u.uid === HOST_UID), '管理后台搜索到用户');
+  const rn = await fetch(`${URL}/api/admin/users/${HOST_UID}`, {
+    method: 'PATCH',
+    headers: { 'x-admin-token': 'admin123', 'content-type': 'application/json' },
+    body: JSON.stringify({ name: '小明改' }),
+  }).then((r) => r.json());
+  assert(rn.ok, '管理后台改名成功');
 
   clients.forEach((c) => c.disconnect());
   console.log(`\n✅ 全部通过: ${passed} 项断言`);

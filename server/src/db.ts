@@ -336,3 +336,132 @@ export function stats(): StatsItem[] {
     .all() as { name: string; games: number; total: number; wins: number }[];
   return rows.map((r) => ({ name: r.name, games: r.games, total: r.total, wins: r.wins }));
 }
+
+// ---------- 管理后台 ----------
+export interface AdminOverview {
+  users: number;
+  gamesFinished: number;
+  gamesLive: number;
+  liveRooms: number;
+  entries: number;
+  draws: number;
+  daily: { date: string; count: number }[];
+  top: StatsItem[];
+  recentUsers: { uid: string; name: string; lastSeenAt: number }[];
+}
+
+export function adminOverview(): AdminOverview {
+  const count = (sql: string): number =>
+    (db.prepare(sql).get() as { c: number }).c;
+  const users = count('SELECT COUNT(*) AS c FROM users');
+  const gamesFinished = count("SELECT COUNT(*) AS c FROM games WHERE status = 'finished'");
+  const gamesLive = count("SELECT COUNT(*) AS c FROM games WHERE status = 'live'");
+  const liveRooms = count('SELECT COUNT(*) AS c FROM live_rooms');
+  const entries = count('SELECT COUNT(*) AS c FROM score_entries');
+  const draws = count('SELECT COUNT(*) AS c FROM condition_draws');
+
+  // 近 7 日完整战局（按 UTC+8 自然日聚合）
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const rows = db
+    .prepare("SELECT started_at FROM games WHERE status = 'finished' AND started_at >= ?")
+    .all(since) as { started_at: number }[];
+  const dayKey = (ts: number) => new Date(ts + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  const buckets = new Map<string, number>();
+  for (let i = 6; i >= 0; i--) {
+    const d = dayKey(Date.now() - i * 24 * 60 * 60 * 1000);
+    buckets.set(d, 0);
+  }
+  for (const r of rows) {
+    const k = dayKey(r.started_at);
+    if (buckets.has(k)) buckets.set(k, (buckets.get(k) ?? 0) + 1);
+  }
+  const daily = [...buckets.entries()].map(([date, c]) => ({ date, count: c }));
+
+  const recentUsers = (
+    db.prepare('SELECT uid, name, last_seen_at FROM users ORDER BY last_seen_at DESC LIMIT 6').all() as {
+      uid: string;
+      name: string;
+      last_seen_at: number;
+    }[]
+  ).map((u) => ({ uid: u.uid, name: u.name, lastSeenAt: u.last_seen_at }));
+
+  return {
+    users,
+    gamesFinished,
+    gamesLive,
+    liveRooms,
+    entries,
+    draws,
+    daily,
+    top: stats().slice(0, 8),
+    recentUsers,
+  };
+}
+
+export interface AdminUserRow {
+  uid: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  games: number;
+  total: number;
+  wins: number;
+}
+
+export function adminUsers(query: string): AdminUserRow[] {
+  const like = `%${query}%`;
+  const rows = db
+    .prepare(
+      `SELECT u.uid, u.name, u.created_at, u.last_seen_at,
+              COALESCE(s.games, 0) AS games, COALESCE(s.total, 0) AS total, COALESCE(s.wins, 0) AS wins
+       FROM users u
+       LEFT JOIN (
+         SELECT gp.uid AS uid,
+                COUNT(*) AS games,
+                SUM(gp.final_score) AS total,
+                SUM(CASE WHEN gp.final_score = (
+                      SELECT MAX(final_score) FROM game_players WHERE game_id = gp.game_id
+                    ) THEN 1 ELSE 0 END) AS wins
+         FROM game_players gp
+         JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+         WHERE gp.uid IS NOT NULL AND gp.uid != ''
+         GROUP BY gp.uid
+       ) s ON s.uid = u.uid
+       WHERE u.name LIKE ? OR u.uid LIKE ?
+       ORDER BY u.last_seen_at DESC
+       LIMIT 200`,
+    )
+    .all(like, like) as {
+    uid: string;
+    name: string;
+    created_at: number;
+    last_seen_at: number;
+    games: number;
+    total: number;
+    wins: number;
+  }[];
+  return rows.map((r) => ({
+    uid: r.uid,
+    name: r.name,
+    createdAt: r.created_at,
+    lastSeenAt: r.last_seen_at,
+    games: r.games,
+    total: r.total,
+    wins: r.wins,
+  }));
+}
+
+export function adminRenameUser(uid: string, name: string): boolean {
+  const info = db.prepare('UPDATE users SET name = ?, last_seen_at = last_seen_at WHERE uid = ?').run(name, uid);
+  return info.changes > 0;
+}
+
+export function adminDeleteUser(uid: string): boolean {
+  const tx = db.transaction(() => {
+    const info = db.prepare('DELETE FROM users WHERE uid = ?').run(uid);
+    // 历史战绩保留，仅切断身份关联
+    db.prepare("UPDATE game_players SET uid = '' WHERE uid = ?").run(uid);
+    return info.changes > 0;
+  });
+  return tx();
+}

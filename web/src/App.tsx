@@ -4,12 +4,14 @@ import type { Snapshot } from './types';
 import Home from './views/Home';
 import Room from './views/Room';
 import { HistoryList, HistoryDetail } from './views/History';
+import Admin from './views/Admin';
 
 export type View =
   | { name: 'home' }
   | { name: 'room'; code: string }
   | { name: 'history' }
-  | { name: 'historyDetail'; id: number };
+  | { name: 'historyDetail'; id: number }
+  | { name: 'admin' };
 
 export interface Toast {
   id: number;
@@ -35,6 +37,7 @@ export function useApp(): AppCtxValue {
 }
 
 function viewFromLocation(): View {
+  if (location.pathname === '/admin') return { name: 'admin' };
   const params = new URLSearchParams(location.search);
   const room = params.get('room');
   if (room && /^[A-Z2-9]{4}$/i.test(room)) return { name: 'room', code: room.toUpperCase() };
@@ -61,6 +64,8 @@ export default function App() {
     setView(v);
     if (v.name === 'room') {
       history.pushState({ view: v }, '', `?room=${v.code}`);
+    } else if (v.name === 'admin') {
+      history.pushState({ view: v }, '', '/admin');
     } else {
       history.pushState({ view: v }, '', location.pathname);
     }
@@ -124,6 +129,7 @@ export default function App() {
         {view.name === 'room' && <Room code={view.code} />}
         {view.name === 'history' && <HistoryList />}
         {view.name === 'historyDetail' && <HistoryDetail id={view.id} />}
+        {view.name === 'admin' && <Admin />}
       </div>
       <ToastViewport toasts={toasts} />
     </AppCtx.Provider>
