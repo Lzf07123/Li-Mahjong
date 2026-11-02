@@ -1,0 +1,39 @@
+# 开发环境：全部在容器内运行，宿主机只有源码目录（node_modules 在命名卷中，零污染）
+name: mahjong-score
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: mahjong-dev-base:latest
+    working_dir: /app
+    environment:
+      - CHOKIDAR_USEPOLLING=1
+      - DATA_DIR=/data
+      - PORT=3000
+    volumes:
+      - ./server:/app
+      - server_node_modules:/app/node_modules
+      - devdata:/data
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install --no-audit --no-fund --registry=https://registry.npmmirror.com && npx tsx watch src/index.ts"
+
+  web:
+    image: mahjong-dev-base:latest
+    working_dir: /app
+    environment:
+      - CHOKIDAR_USEPOLLING=1
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+      - ./.test-artifacts:/out
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install --no-audit --no-fund --registry=https://registry.npmmirror.com && npx vite --host 0.0.0.0 --port 5173 --strictPort"
+
+volumes:
+  server_node_modules:
+  web_node_modules:
+  devdata:

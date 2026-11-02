@@ -1,0 +1,163 @@
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { socket } from './socket';
+import type { Snapshot } from './types';
+import Home from './views/Home';
+import Room from './views/Room';
+import { HistoryList, HistoryDetail } from './views/History';
+
+export type View =
+  | { name: 'home' }
+  | { name: 'room'; code: string }
+  | { name: 'history' }
+  | { name: 'historyDetail'; id: number };
+
+export interface Toast {
+  id: number;
+  msg: string;
+  type: 'info' | 'error' | 'success';
+}
+
+interface AppCtxValue {
+  snap: Snapshot | null;
+  setSnap: (s: Snapshot | null) => void;
+  myId: string | null;
+  setMyId: (id: string | null) => void;
+  conn: 'connecting' | 'connected' | 'disconnected';
+  toast: (msg: string, type?: Toast['type']) => void;
+  go: (v: View) => void;
+  back: () => void;
+}
+
+export const AppCtx = createContext<AppCtxValue>(null!);
+
+export function useApp(): AppCtxValue {
+  return useContext(AppCtx);
+}
+
+function viewFromLocation(): View {
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room');
+  if (room && /^[A-Z2-9]{4}$/i.test(room)) return { name: 'room', code: room.toUpperCase() };
+  return { name: 'home' };
+}
+
+export default function App() {
+  const [view, setView] = useState<View>(viewFromLocation);
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [myId, setMyId] = useState<string | null>(null);
+  const [conn, setConn] = useState<AppCtxValue['conn']>('connecting');
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastSeq = useRef(1);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  const toast = useCallback((msg: string, type: Toast['type'] = 'info') => {
+    const id = toastSeq.current++;
+    setToasts((t) => [...t.slice(-3), { id, msg, type }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2600);
+  }, []);
+
+  const go = useCallback((v: View) => {
+    setView(v);
+    if (v.name === 'room') {
+      history.pushState({ view: v }, '', `?room=${v.code}`);
+    } else {
+      history.pushState({ view: v }, '', location.pathname);
+    }
+  }, []);
+
+  const back = useCallback(() => {
+    history.back();
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => setView(viewFromLocation());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  useEffect(() => {
+    const onConnect = () => setConn('connected');
+    const onDisconnect = () => setConn('disconnected');
+    const onState = (s: Snapshot) => {
+      setSnap((prev) => (prev && prev.code === s.code && prev.rev >= s.rev ? prev : s));
+      if (s.players.some((p) => p.id === myId) || !myId) setConn('connected');
+    };
+    const onGameEnded = (payload: { standings: { name: string; score: number }[] }) => {
+      const winner = [...payload.standings].sort((a, b) => b.score - a.score)[0];
+      setSnap(null);
+      setMyId(null);
+      if (viewRef.current.name === 'room') setView({ name: 'home' });
+      toast(`🏁 战局结束！赢家：${winner?.name ?? '？'}`, 'success');
+    };
+    const onRoomClosed = (payload: { reason: string }) => {
+      setSnap(null);
+      setMyId(null);
+      if (viewRef.current.name === 'room') setView({ name: 'home' });
+      toast(
+        payload.reason === 'kicked' ? '你已被移出房间' : payload.reason === 'expired' ? '房间已过期' : '房间已解散',
+        'error',
+      );
+    };
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('state', onState);
+    socket.on('gameEnded', onGameEnded);
+    socket.on('roomClosed', onRoomClosed);
+    if (socket.connected) setConn('connected');
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('state', onState);
+      socket.off('gameEnded', onGameEnded);
+      socket.off('roomClosed', onRoomClosed);
+    };
+  }, [myId, toast]);
+
+  const ctx: AppCtxValue = { snap, setSnap, myId, setMyId, conn, toast, go, back };
+
+  return (
+    <AppCtx.Provider value={ctx}>
+      <BackdropTiles />
+      <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col">
+        {view.name === 'home' && <Home />}
+        {view.name === 'room' && <Room code={view.code} />}
+        {view.name === 'history' && <HistoryList />}
+        {view.name === 'historyDetail' && <HistoryDetail id={view.id} />}
+      </div>
+      <ToastViewport toasts={toasts} />
+    </AppCtx.Provider>
+  );
+}
+
+function BackdropTiles() {
+  return (
+    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 select-none overflow-hidden">
+      <span className="animate-float-slow absolute -left-4 top-[14%] text-8xl opacity-[0.05]">🀄</span>
+      <span className="animate-float-slow absolute right-[3%] top-[34%] text-7xl opacity-[0.04] [animation-delay:1.2s]">🀅</span>
+      <span className="animate-float-slow absolute bottom-[20%] left-[7%] text-7xl opacity-[0.04] [animation-delay:2.1s]">🀆</span>
+      <span className="animate-float-slow absolute bottom-[5%] right-[10%] text-8xl opacity-[0.05] [animation-delay:3s]">🀇</span>
+    </div>
+  );
+}
+
+function ToastViewport({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div className="pointer-events-none fixed inset-x-0 top-3 z-[100] flex flex-col items-center gap-2 px-4">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`animate-pop max-w-full rounded-2xl border px-4 py-2 text-center text-sm font-medium shadow-xl backdrop-blur-md ${
+            t.type === 'error'
+              ? 'border-red-400/40 bg-red-950/80 text-red-100'
+              : t.type === 'success'
+                ? 'border-emerald-400/40 bg-emerald-950/80 text-emerald-100'
+                : 'border-white/20 bg-black/70 text-white'
+          }`}
+        >
+          {t.msg}
+        </div>
+      ))}
+    </div>
+  );
+}

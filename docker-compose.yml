@@ -1,0 +1,15 @@
+name: mahjong-score
+
+services:
+  mahjong:
+    build: .
+    image: mahjong-score:latest
+    container_name: mahjong-score
+    ports:
+      - "3000:3000"
+    volumes:
+      - mahjong_data:/data
+    restart: unless-stopped
+
+volumes:
+  mahjong_data:
