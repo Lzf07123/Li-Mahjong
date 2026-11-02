@@ -10,12 +10,6 @@ const SEATS = ['东', '南', '西', '北'];
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** 规范化客户端上传的设备 uid */
-function normUid(v: unknown): string | null {
-  const s = String(v ?? '').trim().slice(0, 64);
-  return /^[A-Za-z0-9_-]{6,64}$/.test(s) ? s : null;
-}
-
 interface BuiltinData {
   cards: CardDef[];
 }
@@ -218,17 +212,15 @@ export class RoomManager {
 
   // ---------- 连接处理 ----------
   register(socket: Socket): void {
-    socket.on('room:create', (payload: { name?: string; uid?: string }, ack?: Ack) => {
-      const name = String(payload?.name ?? '').trim().slice(0, 12);
-      if (!name) return ack?.({ ok: false, error: '请先填写昵称' });
-      const uid = normUid(payload?.uid);
-      if (uid) dbi.upsertUser(uid, name);
+    socket.on('room:create', (payload: { token?: string }, ack?: Ack) => {
+      const user = dbi.userBySession(String(payload?.token ?? '').trim());
+      if (!user) return ack?.({ ok: false, error: '请先登录' });
       const code = this.genCode();
       const host: Player = {
         id: randomUUID(),
         token: randomUUID(),
-        uid,
-        name,
+        uid: user.uid,
+        name: user.name,
         seat: SEATS[0],
         score: 0,
         connected: true,
@@ -258,18 +250,16 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('room:join', (payload: { code?: string; name?: string; uid?: string }, ack?: Ack) => {
+    socket.on('room:join', (payload: { code?: string; token?: string }, ack?: Ack) => {
       const code = String(payload?.code ?? '').trim().toUpperCase();
-      const name = String(payload?.name ?? '').trim().slice(0, 12);
-      if (!name) return ack?.({ ok: false, error: '请先填写昵称' });
+      const user = dbi.userBySession(String(payload?.token ?? '').trim());
+      if (!user) return ack?.({ ok: false, error: '请先登录' });
       const room = this.roomByCode(code);
       if (!room) return ack?.({ ok: false, error: '房间不存在，可能已结束或已过期' });
-      const uid = normUid(payload?.uid);
-      if (uid) dbi.upsertUser(uid, name);
-      // 同一设备身份已在房间中（如换了浏览器标签/清了会话）：直接回合，不再新增玩家
-      const existing = uid ? room.players.find((p) => p.uid === uid) : undefined;
+      // 同一账号已在房间中（如换了浏览器标签/清了会话）：直接回合，不再新增玩家
+      const existing = room.players.find((p) => p.uid === user.uid);
       if (existing) {
-        existing.name = name;
+        existing.name = user.name;
         existing.token = randomUUID();
         existing.connected = true;
         socket.data.playerId = existing.id;
@@ -280,15 +270,15 @@ export class RoomManager {
         return;
       }
       if (room.players.length >= SEATS.length) return ack?.({ ok: false, error: '房间已满（4人）' });
-      if (room.players.some((p) => p.name === name))
-        return ack?.({ ok: false, error: '昵称已被使用，换一个吧' });
+      if (room.players.some((p) => p.name === user.name))
+        return ack?.({ ok: false, error: '房间里已有同名玩家' });
       const used = new Set(room.players.map((p) => p.seat));
       const seat = SEATS.find((s) => !used.has(s)) ?? SEATS[0];
       const player: Player = {
         id: randomUUID(),
         token: randomUUID(),
-        uid,
-        name,
+        uid: user.uid,
+        name: user.name,
         seat,
         score: 0,
         connected: true,

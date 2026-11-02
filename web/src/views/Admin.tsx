@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   adminApi,
+  api,
   getAdminToken,
   setAdminToken,
   type AdminOverview,
@@ -8,6 +9,7 @@ import {
 } from '../socket';
 import { useApp } from '../App';
 import { ConfirmButton, fmtTime, scoreColor } from '../components/common';
+import { Footer } from '../components/Footer';
 
 export default function Admin() {
   const { back, toast } = useApp();
@@ -18,12 +20,15 @@ export default function Admin() {
   const [users, setUsers] = useState<AdminUserRow[] | null>(null);
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<{ uid: string; name: string } | null>(null);
+  const [pwEdit, setPwEdit] = useState<{ uid: string; pw: string } | null>(null);
+  const [footer, setFooter] = useState<{ github: string; text: string }>({ github: '', text: '' });
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async (q: string) => {
-    const [o, u] = await Promise.all([adminApi.overview(), adminApi.users(q)]);
+    const [o, u, s] = await Promise.all([adminApi.overview(), adminApi.users(q), api.settings()]);
     setOv(o);
     setUsers(u.items);
+    setFooter(s);
   }, []);
 
   // 有存档口令时自动尝试登录
@@ -75,6 +80,33 @@ export default function Admin() {
       await adminApi.deleteUser(uid);
       await refresh();
       toast('已删除用户（历史战绩保留）', 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetPw = async (uid: string, pw: string) => {
+    if (pw.length < 4) return toast('新密码至少 4 位', 'error');
+    setBusy(true);
+    try {
+      await adminApi.resetPassword(uid, pw);
+      setPwEdit(null);
+      toast('✓ 密码已重置，请告知该用户', 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveFooter = async () => {
+    setBusy(true);
+    try {
+      const r = await adminApi.setFooter(footer.github.trim(), footer.text.trim());
+      setFooter(r.settings);
+      toast('✓ 页脚已更新', 'success');
     } catch (e) {
       toast((e as Error).message, 'error');
     } finally {
@@ -206,78 +238,147 @@ export default function Admin() {
             ) : (
               <div className="space-y-2">
                 {users.map((u) => (
-                  <div
-                    key={u.uid}
-                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5"
-                  >
-                    <div className="min-w-0 flex-1">
-                      {editing?.uid === u.uid ? (
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            className="input !min-h-[34px] max-w-[10em] text-sm"
-                            value={editing.name}
-                            maxLength={12}
-                            autoFocus
-                            onChange={(e) => setEditing({ uid: u.uid, name: e.target.value })}
-                            onKeyDown={(e) => e.key === 'Enter' && rename(u.uid, editing.name)}
-                          />
-                          <button
-                            className="btn-jade !min-h-[32px] !px-2.5 text-[11px]"
-                            disabled={busy}
-                            onClick={() => rename(u.uid, editing.name)}
-                          >
-                            保存
-                          </button>
-                          <button
-                            className="btn-ghost !min-h-[32px] !px-2.5 text-[11px]"
-                            onClick={() => setEditing(null)}
-                          >
-                            取消
-                          </button>
+                  <div key={u.uid} className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        {editing?.uid === u.uid ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              className="input !min-h-[34px] max-w-[10em] text-sm"
+                              value={editing.name}
+                              maxLength={12}
+                              autoFocus
+                              onChange={(e) => setEditing({ uid: u.uid, name: e.target.value })}
+                              onKeyDown={(e) => e.key === 'Enter' && rename(u.uid, editing.name)}
+                            />
+                            <button
+                              className="btn-jade !min-h-[32px] !px-2.5 text-[11px]"
+                              disabled={busy}
+                              onClick={() => rename(u.uid, editing.name)}
+                            >
+                              保存
+                            </button>
+                            <button
+                              className="btn-ghost !min-h-[32px] !px-2.5 text-[11px]"
+                              onClick={() => setEditing(null)}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <b className="text-sm">{u.name}</b>
+                            {u.username && (
+                              <span className="ml-2 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/50">
+                                {u.username}
+                              </span>
+                            )}
+                            <span className="ml-2 font-mono text-[10px] text-white/30">{u.uid.slice(0, 8)}</span>
+                          </>
+                        )}
+                        <div className="mt-0.5 text-[10px] text-white/40">
+                          最近活跃 {fmtTime(u.lastSeenAt)} · 注册 {fmtTime(u.createdAt)}
                         </div>
-                      ) : (
-                        <>
-                          <b className="text-sm">{u.name}</b>
-                          <span className="ml-2 font-mono text-[10px] text-white/30">{u.uid.slice(0, 8)}</span>
-                        </>
-                      )}
-                      <div className="mt-0.5 text-[10px] text-white/40">
-                        最近活跃 {fmtTime(u.lastSeenAt)} · 注册 {fmtTime(u.createdAt)}
+                      </div>
+                      <div className="flex items-center gap-2 text-[12px]">
+                        <span className="text-white/50">{u.games} 场</span>
+                        <span className={`font-black ${scoreColor(u.total)}`}>
+                          {u.total > 0 ? '+' : ''}
+                          {u.total}
+                        </span>
+                        <span className="text-[10px] text-white/40">赢{u.wins}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          className="min-h-[34px] rounded-lg border border-white/15 px-2.5 text-[11px] font-semibold text-white/70 hover:bg-white/10"
+                          onClick={() => setEditing({ uid: u.uid, name: u.name })}
+                        >
+                          改名
+                        </button>
+                        <button
+                          className="min-h-[34px] rounded-lg border border-white/15 px-2.5 text-[11px] font-semibold text-amber-200 hover:bg-white/10"
+                          onClick={() => setPwEdit(pwEdit?.uid === u.uid ? null : { uid: u.uid, pw: '' })}
+                        >
+                          重置密码
+                        </button>
+                        <ConfirmButton
+                          className="min-h-[34px] rounded-lg border border-red-400/30 px-2.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/15"
+                          confirmText="确认删除？"
+                          onConfirm={() => remove(u.uid)}
+                        >
+                          删除
+                        </ConfirmButton>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 text-[12px]">
-                      <span className="text-white/50">{u.games} 场</span>
-                      <span className={`font-black ${scoreColor(u.total)}`}>
-                        {u.total > 0 ? '+' : ''}
-                        {u.total}
-                      </span>
-                      <span className="text-[10px] text-white/40">赢{u.wins}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        className="min-h-[34px] rounded-lg border border-white/15 px-2.5 text-[11px] font-semibold text-white/70 hover:bg-white/10"
-                        onClick={() => setEditing({ uid: u.uid, name: u.name })}
-                      >
-                        改名
-                      </button>
-                      <ConfirmButton
-                        className="min-h-[34px] rounded-lg border border-red-400/30 px-2.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/15"
-                        confirmText="确认删除？"
-                        onConfirm={() => remove(u.uid)}
-                      >
-                        删除
-                      </ConfirmButton>
-                    </div>
+                    {pwEdit?.uid === u.uid && (
+                      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-500/[0.06] px-3 py-2.5">
+                        <span className="text-xs font-semibold text-amber-200">新密码</span>
+                        <input
+                          className="input !min-h-[34px] max-w-[14em] text-sm"
+                          type="text"
+                          placeholder="至少 4 位，设置后告知用户"
+                          maxLength={64}
+                          value={pwEdit.pw}
+                          autoFocus
+                          onChange={(e) => setPwEdit({ uid: u.uid, pw: e.target.value })}
+                          onKeyDown={(e) => e.key === 'Enter' && resetPw(u.uid, pwEdit.pw)}
+                        />
+                        <button
+                          className="btn-jade !min-h-[32px] !px-2.5 text-[11px]"
+                          disabled={busy}
+                          onClick={() => resetPw(u.uid, pwEdit.pw)}
+                        >
+                          确认重置
+                        </button>
+                        <button
+                          className="btn-ghost !min-h-[32px] !px-2.5 text-[11px]"
+                          onClick={() => setPwEdit(null)}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
             <p className="mt-3 text-[11px] leading-relaxed text-white/35">
-              删除用户仅切断身份与历史战绩的关联（战绩数字保留）；改名会同步更新排行榜显示。
+              删除用户仅切断身份与历史战绩的关联（战绩数字保留）；改名只改显示昵称，登录名不可改；忘记密码在此重置后告知用户。
             </p>
+          </div>
+
+          {/* 页脚设置 */}
+          <div className="panel p-4">
+            <h2 className="mb-1 text-sm font-bold text-white/85">🦶 页脚设置</h2>
+            <p className="mb-3 text-[11px] text-white/40">显示在首页等页面底部，留空则隐藏对应项。</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-white/55">GitHub 链接</label>
+                <input
+                  className="input text-sm"
+                  placeholder="https://github.com/your/repo"
+                  value={footer.github}
+                  onChange={(e) => setFooter({ ...footer, github: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-white/55">页脚文字</label>
+                <input
+                  className="input text-sm"
+                  placeholder="如：牌友快乐屋 · 请理性游戏"
+                  maxLength={200}
+                  value={footer.text}
+                  onChange={(e) => setFooter({ ...footer, text: e.target.value })}
+                />
+              </div>
+            </div>
+            <button className="btn-jade mt-3 w-full sm:w-32" disabled={busy} onClick={saveFooter}>
+              保存页脚
+            </button>
           </div>
         </div>
       )}
+      <Footer />
     </div>
   );
 }

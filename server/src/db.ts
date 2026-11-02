@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type {
   CardDef,
   Category,
@@ -75,9 +75,19 @@ CREATE TABLE IF NOT EXISTS users (
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  uid TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
-// 旧库迁移：games.features / game_players.uid
+// 旧库迁移：games.features / game_players.uid / users 登录列
 try {
   db.exec("ALTER TABLE games ADD COLUMN features TEXT");
 } catch {
@@ -87,6 +97,120 @@ try {
   db.exec("ALTER TABLE game_players ADD COLUMN uid TEXT");
 } catch {
   /* 列已存在 */
+}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN username TEXT");
+} catch {
+  /* 列已存在 */
+}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN pass TEXT");
+} catch {
+  /* 列已存在 */
+}
+try {
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL");
+} catch {
+  /* 索引已存在 */
+}
+
+// ---------- 账号认证 ----------
+export function hashPassword(pw: string): string {
+  const salt = randomBytes(8).toString('hex');
+  return `${salt}:${scryptSync(pw, salt, 32).toString('hex')}`;
+}
+
+export function verifyPassword(pw: string, stored: string | null): boolean {
+  if (!stored) return false;
+  const [salt, h] = stored.split(':');
+  if (!salt || !h) return false;
+  const calc = scryptSync(pw, salt, 32).toString('hex');
+  return calc.length === h.length && timingSafeEqual(Buffer.from(calc), Buffer.from(h));
+}
+
+export interface UserRow {
+  uid: string;
+  name: string;
+  username: string | null;
+}
+
+/** username = 登录名（唯一、不可改）；name = 昵称（可自行修改） */
+export function createUserWithPass(loginName: string, name: string, password: string): UserRow | null {
+  try {
+    const uid = randomUUID();
+    db.prepare(
+      'INSERT INTO users (uid, name, username, pass, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(uid, name, loginName, hashPassword(password), Date.now(), Date.now());
+    return { uid, name, username: loginName };
+  } catch {
+    return null; // 登录名冲突
+  }
+}
+
+/** 更新显示昵称（自助 & 管理共用） */
+export function updateNameByUid(uid: string, name: string): boolean {
+  const info = db.prepare('UPDATE users SET name = ? WHERE uid = ?').run(name, uid);
+  return info.changes > 0;
+}
+
+export function findUserByUsername(username: string): (UserRow & { pass: string | null }) | undefined {
+  return db.prepare('SELECT uid, name, username, pass FROM users WHERE username = ?').get(username) as
+    | (UserRow & { pass: string | null })
+    | undefined;
+}
+
+export function getUserByUid(uid: string): UserRow | undefined {
+  return db.prepare('SELECT uid, name, username FROM users WHERE uid = ?').get(uid) as UserRow | undefined;
+}
+
+export function setPasswordByUid(uid: string, password: string): boolean {
+  const info = db.prepare('UPDATE users SET pass = ? WHERE uid = ?').run(hashPassword(password), uid);
+  return info.changes > 0;
+}
+
+export function createSession(uid: string, days = 30): string {
+  const token = randomUUID() + randomUUID().replace(/-/g, '');
+  db.prepare('INSERT INTO sessions (token, uid, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
+    token,
+    uid,
+    Date.now(),
+    Date.now() + days * 86400e3,
+  );
+  return token;
+}
+
+export function deleteSession(token: string): void {
+  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+export function userBySession(token: string): UserRow | undefined {
+  if (!token) return undefined;
+  const s = db.prepare('SELECT uid, expires_at FROM sessions WHERE token = ?').get(token) as
+    | { uid: string; expires_at: number }
+    | undefined;
+  if (!s) return undefined;
+  if (s.expires_at < Date.now()) {
+    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    return undefined;
+  }
+  return getUserByUid(s.uid);
+}
+
+// ---------- 站点设置（页脚等） ----------
+export function setSetting(key: string, value: string): void {
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(key, value);
+}
+
+export function getSetting(key: string): string {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? '';
+}
+
+export function allSettings(): { github: string; text: string } {
+  return { github: getSetting('footer_github'), text: getSetting('footer_text') };
 }
 
 // ---------- 用户档案 ----------
@@ -401,6 +525,7 @@ export function adminOverview(): AdminOverview {
 export interface AdminUserRow {
   uid: string;
   name: string;
+  username: string | null;
   createdAt: number;
   lastSeenAt: number;
   games: number;
@@ -412,7 +537,7 @@ export function adminUsers(query: string): AdminUserRow[] {
   const like = `%${query}%`;
   const rows = db
     .prepare(
-      `SELECT u.uid, u.name, u.created_at, u.last_seen_at,
+      `SELECT u.uid, u.name, u.username, u.created_at, u.last_seen_at,
               COALESCE(s.games, 0) AS games, COALESCE(s.total, 0) AS total, COALESCE(s.wins, 0) AS wins
        FROM users u
        LEFT JOIN (
@@ -427,13 +552,14 @@ export function adminUsers(query: string): AdminUserRow[] {
          WHERE gp.uid IS NOT NULL AND gp.uid != ''
          GROUP BY gp.uid
        ) s ON s.uid = u.uid
-       WHERE u.name LIKE ? OR u.uid LIKE ?
+       WHERE u.name LIKE ? OR u.uid LIKE ? OR IFNULL(u.username, '') LIKE ?
        ORDER BY u.last_seen_at DESC
        LIMIT 200`,
     )
-    .all(like, like) as {
+    .all(like, like, like) as {
     uid: string;
     name: string;
+    username: string | null;
     created_at: number;
     last_seen_at: number;
     games: number;
@@ -443,6 +569,7 @@ export function adminUsers(query: string): AdminUserRow[] {
   return rows.map((r) => ({
     uid: r.uid,
     name: r.name,
+    username: r.username,
     createdAt: r.created_at,
     lastSeenAt: r.last_seen_at,
     games: r.games,
@@ -452,8 +579,7 @@ export function adminUsers(query: string): AdminUserRow[] {
 }
 
 export function adminRenameUser(uid: string, name: string): boolean {
-  const info = db.prepare('UPDATE users SET name = ?, last_seen_at = last_seen_at WHERE uid = ?').run(name, uid);
-  return info.changes > 0;
+  return updateNameByUid(uid, name);
 }
 
 export function adminDeleteUser(uid: string): boolean {

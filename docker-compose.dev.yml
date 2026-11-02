@@ -12,6 +12,7 @@ services:
       - CHOKIDAR_USEPOLLING=1
       - DATA_DIR=/data
       - PORT=3000
+      - ALLOW_TEST_CAPTCHA=1
     volumes:
       - ./server:/app
       - server_node_modules:/app/node_modules

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../socket';
 import { useApp } from '../App';
 import { CategoryChip, SeatBadge, fmtTime, scoreColor } from '../components/common';
+import { Footer } from '../components/Footer';
 import type { HistoryDetailData, HistoryItem } from '../types';
 
 export function HistoryList() {
@@ -69,6 +70,7 @@ export function HistoryList() {
           })}
         </div>
       )}
+      <Footer />
     </div>
   );
 }
@@ -172,6 +174,7 @@ export function HistoryDetail({ id }: { id: number }) {
           ))
         )}
       </div>
+      <Footer />
     </div>
   );
 }

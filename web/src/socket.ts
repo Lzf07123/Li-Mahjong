@@ -19,9 +19,9 @@ export function emitAck<T = Record<string, unknown>>(event: string, payload?: un
   });
 }
 
-/** 房间相关 emit 自动携带设备 uid */
+/** 房间相关 emit 自动携带登录 token */
 export function emitRoomAck<T = Record<string, unknown>>(event: string, payload?: Record<string, unknown>): Promise<T & AckResp> {
-  return emitAck<T>(event, { uid: getUid(), ...payload });
+  return emitAck<T>(event, { token: getAuthToken(), ...payload });
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -43,12 +43,79 @@ export function getUid(): string {
   return uid;
 }
 
-export interface MeInfo {
+// ---------- 登录态 ----------
+export interface AuthUser {
   uid: string;
   name: string;
+}
+
+export interface MeInfo extends AuthUser {
+  username: string | null;
   games: number;
   total: number;
   wins: number;
+}
+
+// getUid 已由账号体系取代，保留清理入口
+export function purgeLegacyUid(): void {
+  localStorage.removeItem('mj:uid');
+}
+
+export function saveAuth(token: string, user: AuthUser): void {
+  localStorage.setItem('mj:auth', JSON.stringify({ token, user }));
+}
+
+export function loadAuth(): { token: string; user: AuthUser } | null {
+  try {
+    const raw = localStorage.getItem('mj:auth');
+    if (!raw) return null;
+    const a = JSON.parse(raw) as { token: string; user: AuthUser };
+    return a.token && a.user?.uid ? a : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearAuth(): void {
+  localStorage.removeItem('mj:auth');
+}
+
+export function getAuthToken(): string {
+  return loadAuth()?.token ?? '';
+}
+
+async function authedJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { headers: { authorization: `Bearer ${getAuthToken()}` } });
+  if (res.status === 401) throw new Error('未登录');
+  if (!res.ok) throw new Error(`请求失败(${res.status})`);
+  return res.json() as Promise<T>;
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string } & T;
+  if (!res.ok) throw new Error(data?.error || `请求失败(${res.status})`);
+  return data;
+}
+
+async function authedPost<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${getAuthToken()}` },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as { error?: string } & T;
+  if (!res.ok) throw new Error(data?.error || `请求失败(${res.status})`);
+  return data;
+}
+
+export interface Captcha {
+  id: string;
+  svg: string;
 }
 
 export const api = {
@@ -56,7 +123,29 @@ export const api = {
   history: () => getJson<{ items: import('./types').HistoryItem[] }>('/api/history'),
   historyDetail: (id: number) => getJson<import('./types').HistoryDetailData>(`/api/history/${id}`),
   stats: () => getJson<{ items: import('./types').StatsItem[] }>('/api/stats'),
-  me: (uid: string) => getJson<MeInfo>(`/api/me?uid=${encodeURIComponent(uid)}`),
+  settings: () => getJson<{ github: string; text: string }>('/api/settings'),
+  captcha: () => getJson<Captcha>('/api/captcha'),
+  me: () => authedJson<MeInfo>('/api/me'),
+  register: (loginName: string, name: string, password: string, captchaId: string, captchaText: string) =>
+    postJson<{ token: string; user: AuthUser }>('/api/auth/register', {
+      loginName,
+      name,
+      password,
+      captchaId,
+      captchaText,
+    }),
+  login: (loginName: string, password: string, captchaId: string, captchaText: string) =>
+    postJson<{ token: string; user: AuthUser }>('/api/auth/login', {
+      loginName,
+      password,
+      captchaId,
+      captchaText,
+    }),
+  logout: () => postJson<{ ok: boolean }>('/api/auth/logout', {}),
+  changeName: (name: string) =>
+    authedPost<{ ok: boolean; user: AuthUser }>('/api/auth/change-name', { name }),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    authedPost<{ ok: boolean }>('/api/auth/change-password', { oldPassword, newPassword }),
 };
 
 // ---------- 管理后台 ----------
@@ -75,6 +164,7 @@ export interface AdminOverview {
 export interface AdminUserRow {
   uid: string;
   name: string;
+  username: string | null;
   createdAt: number;
   lastSeenAt: number;
   games: number;
@@ -110,6 +200,16 @@ export const adminApi = {
     }),
   deleteUser: (uid: string) =>
     adminFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(uid)}`, { method: 'DELETE' }),
+  resetPassword: (uid: string, password: string) =>
+    adminFetch<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(uid)}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    }),
+  setFooter: (github: string, text: string) =>
+    adminFetch<{ ok: boolean; settings: { github: string; text: string } }>('/api/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ github, text }),
+    }),
 };
 
 // ---------- 本地会话 ----------

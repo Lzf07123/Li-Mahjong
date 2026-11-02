@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../App';
-import { clearSession, emitAck, emitRoomAck, loadSession, saveSession, saveName } from '../socket';
+import { clearSession, emitAck, emitRoomAck, loadAuth, loadSession, saveSession } from '../socket';
 import type { PlayerView } from '../types';
 import { Avatar, ConfirmButton, SeatBadge, SEATS, Sheet } from '../components/common';
+import { AuthForm } from '../components/AuthForm';
 import { CardWall, DrawOverlay, MyCard } from '../components/Cards';
 import { PlayerStrip, Scoreboard } from '../components/Scoreboard';
 import { ScoreForm } from '../components/ScoreForm';
@@ -14,9 +15,10 @@ import type { Snapshot } from '../types';
 type Tab = 'score' | 'card' | 'ledger' | 'manage';
 
 export default function Room({ code }: { code: string }) {
-  const { snap, myId, setMyId, go, toast } = useApp();
+  const { snap, myId, setMyId, go } = useApp();
   const [phase, setPhase] = useState<'init' | 'gate' | 'ready'>('init');
-  const [gateName, setGateName] = useState('');
+  const [authed, setAuthed] = useState(() => !!loadAuth());
+  const [gateError, setGateError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -42,22 +44,37 @@ export default function Room({ code }: { code: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  const join = async () => {
-    const n = gateName.trim();
-    if (!n) return toast('先填昵称', 'error');
-    saveName(n);
+  const attemptJoin = useCallback(async () => {
+    if (!loadAuth()) {
+      setAuthed(false);
+      return;
+    }
     setBusy(true);
+    setGateError('');
     try {
-      const r = await emitRoomAck('room:join', { code, name: n });
-      saveSession(code, { playerId: r.playerId as string, token: r.token as string, name: n });
+      const r = await emitRoomAck('room:join', { code });
+      saveSession(code, {
+        playerId: r.playerId as string,
+        token: r.token as string,
+        name: loadAuth()!.user.name,
+      });
       setMyId(r.playerId as string);
       setPhase('ready');
     } catch (e) {
-      toast((e as Error).message, 'error');
+      const msg = (e as Error).message;
+      if (msg.includes('登录')) setAuthed(false);
+      else setGateError(msg);
     } finally {
       setBusy(false);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
+  // 已登录：自动尝试加入；未登录：等 AuthForm 完成后自动加入
+  useEffect(() => {
+    if (phase === 'gate' && authed && !busy && !gateError) attemptJoin();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, authed]);
 
   if (phase !== 'ready') {
     return (
@@ -66,25 +83,31 @@ export default function Room({ code }: { code: string }) {
           <div className="mb-1 text-center text-4xl">🀄</div>
           <h1 className="text-center text-lg font-black">加入房间</h1>
           <p className="mt-1 text-center text-sm text-gold">房间码 {code}</p>
-          {phase === 'gate' ? (
+          {phase === 'init' ? (
+            <p className="py-8 text-center text-sm text-white/50">正在恢复会话…</p>
+          ) : !authed ? (
             <>
-              <input
-                className="input mt-5 text-center"
-                placeholder="你的昵称"
-                maxLength={12}
-                value={gateName}
-                onChange={(e) => setGateName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && join()}
-              />
-              <button className="btn-primary mt-4 w-full" disabled={busy} onClick={join}>
-                {busy ? '进入中…' : '进入房间'}
+              <div className="mt-5">
+                <AuthForm
+                  note={`登录后将自动加入房间 ${code}`}
+                  onAuthed={() => setAuthed(true)}
+                />
+              </div>
+              <button className="btn-ghost mt-4 w-full" onClick={() => go({ name: 'home' })}>
+                返回首页
               </button>
-              <button className="btn-ghost mt-2 w-full" onClick={() => go({ name: 'home' })}>
+            </>
+          ) : gateError ? (
+            <>
+              <p className="mt-5 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-center text-xs text-red-200">
+                {gateError}
+              </p>
+              <button className="btn-ghost mt-4 w-full" onClick={() => go({ name: 'home' })}>
                 返回首页
               </button>
             </>
           ) : (
-            <p className="py-8 text-center text-sm text-white/50">正在恢复会话…</p>
+            <p className="py-8 text-center text-sm text-white/50">正在进入房间…</p>
           )}
         </div>
       </div>
