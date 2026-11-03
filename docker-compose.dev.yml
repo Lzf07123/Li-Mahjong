@@ -6,6 +6,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
     image: mahjong-dev-base:latest
     working_dir: /app
     environment:

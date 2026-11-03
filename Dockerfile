@@ -1,7 +1,14 @@
 # ---------- 构建阶段 ----------
 FROM node:22-bookworm-slim AS build
+
+# 可选 apt 加速镜像（留空 = 官方源；示例：mirrors.tuna.tsinghua.edu.cn / mirrors.aliyun.com / mirrors.ustc.edu.cn）
+ARG APT_MIRROR=""
+
 # better-sqlite3 预编译二进制不可用时的本地编译兜底
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # 默认使用国内镜像源，可通过 --build-arg NPM_REGISTRY= 覆盖

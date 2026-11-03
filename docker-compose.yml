@@ -6,6 +6,7 @@ services:
       context: .
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        APT_MIRROR: ${APT_MIRROR:-}
     image: mahjong-score:latest
     container_name: mahjong-score
     ports:
