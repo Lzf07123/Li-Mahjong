@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { socket } from './socket';
+import { socket, clearAuth, loadSession, clearSession, markRoomLeft, emitAck } from './socket';
 import type { Snapshot } from './types';
 import Home from './views/Home';
 import Room from './views/Room';
@@ -82,7 +82,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const onConnect = () => setConn('connected');
+    const onConnect = () => {
+      setConn('connected');
+      // 断线重连后服务端 socket 状态已丢失：若在房间视图，用本地会话重新入房恢复推送
+      const v = viewRef.current;
+      if (v.name === 'room') {
+        const saved = loadSession(v.code);
+        if (saved) {
+          emitAck('room:rejoin', { code: v.code, token: saved.token })
+            .then((r) => setMyId(r.playerId as string))
+            .catch(() => {});
+        }
+      }
+    };
     const onDisconnect = () => setConn('disconnected');
     const onState = (s: Snapshot) => {
       setSnap((prev) => (prev && prev.code === s.code && prev.rev >= s.rev ? prev : s));
@@ -98,7 +110,22 @@ export default function App() {
     const onRoomClosed = (payload: { reason: string }) => {
       setSnap(null);
       setMyId(null);
-      if (viewRef.current.name === 'room') setView({ name: 'home' });
+      const v = viewRef.current;
+      if (v.name === 'room') {
+        clearSession(v.code); // 房间会话已失效，避免下次误 rejoin
+        // 主动离开/被踢：打标记，刷新房间链接时不再自动加入
+        if (payload.reason === 'left' || payload.reason === 'kicked') markRoomLeft(v.code);
+        setView({ name: 'home' });
+      }
+      if (payload.reason === 'sessionReplaced') {
+        clearAuth(); // 会话已被新登录顶掉，回到未登录态
+        toast('该账号已在其他设备登录，此处已下线', 'error');
+        return;
+      }
+      if (payload.reason === 'left') {
+        toast('👋 已退出战局', 'success');
+        return;
+      }
       toast(
         payload.reason === 'kicked' ? '你已被移出房间' : payload.reason === 'expired' ? '房间已过期' : '房间已解散',
         'error',

@@ -98,11 +98,11 @@ function PlayerTile({
         </div>
         {showScore && (
           <div className="shrink-0 text-right">
-            <div className={`text-xl font-black leading-none ${scoreColor(p.score)}`}>
+            <div className={`num text-xl font-black leading-none ${scoreColor(p.score)}`}>
               {p.score > 0 ? '+' : ''}
               {p.score}
             </div>
-            {isTop && <div className="mt-0.5 text-[9px] font-bold text-gold">领先 👑</div>}
+            {isTop && <div className="mt-0.5 text-[9px] font-bold text-gold-grad">领先 👑</div>}
           </div>
         )}
       </div>

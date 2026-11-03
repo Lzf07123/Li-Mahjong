@@ -40,6 +40,8 @@ export class RoomManager {
   private builtin: CardDef[];
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private sweepTimer: ReturnType<typeof setInterval>;
+  /** 单点登录兜底清扫：会话过期的在场玩家定期请离 */
+  private sessionTimer: ReturnType<typeof setInterval>;
   /** socket 级操作节流：key -> 时间戳数组 */
   private throttleMap = new Map<string, number[]>();
 
@@ -59,6 +61,7 @@ export class RoomManager {
     this.builtin = loadBuiltin();
     this.restore();
     this.sweepTimer = setInterval(() => this.sweep(), 10 * 60 * 1000);
+    this.sessionTimer = setInterval(() => this.sweepSessions(), 30 * 1000);
   }
 
   get categoriesMeta() {
@@ -77,6 +80,7 @@ export class RoomManager {
         room.disabledCardIds ??= [];
         room.disabledCategoryIds ??= [];
         room.entries ??= [];
+        room.leftPlayers ??= [];
         if (Date.now() - room.lastActivity > ROOM_TTL_MS) {
           this.expire(room);
           continue;
@@ -98,13 +102,40 @@ export class RoomManager {
     }
   }
 
+  /** 单点登录兜底：会话已失效（被顶掉/过期）的在场玩家定期请离 */
+  private sweepSessions(): void {
+    for (const room of this.rooms.values()) {
+      for (const p of [...room.players]) {
+        if (!p.sessionToken) continue;
+        if (dbi.userBySession(p.sessionToken)) continue;
+        this.removePlayer(room, p.id, 'sessionReplaced');
+        this.broadcastRoom(room);
+      }
+    }
+  }
+
+  /** 单点登录：该账号在别处重新登录，立即请离其在所有房间中的旧会话玩家 */
+  evictUid(uid: string | null | undefined): void {
+    if (!uid) return;
+    for (const room of this.rooms.values()) {
+      const p = room.players.find((x) => x.uid === uid);
+      if (!p) continue;
+      this.removePlayer(room, p.id, 'sessionReplaced');
+      this.broadcastRoom(room);
+    }
+  }
+
+  /** 结算名单：在场玩家 + 战局中离场者 */
+  private standingsOf(room: Room) {
+    return [
+      ...room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null })),
+      ...room.leftPlayers.map((lp) => ({ name: lp.name, seat: lp.seat, score: lp.score, isHost: false, uid: lp.uid })),
+    ];
+  }
+
   private expire(room: Room): void {
     if (room.gameId) {
-      dbi.finalizeGame(
-        room.gameId,
-        'abandoned',
-        room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null })),
-      );
+      dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
     }
     dbi.deleteLiveRoom(room.code);
     this.rooms.delete(room.code);
@@ -123,6 +154,13 @@ export class RoomManager {
         dbi.saveLiveRoom(room.code, room);
       }, 400),
     );
+  }
+
+  /** 房间存活概要（内存实时态，供 REST「回到战局」查询）；不存在返回 null */
+  peek(code: string): { status: string; roundNo: number; playerCount: number } | null {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    return { status: room.status, roundNo: room.roundNo, playerCount: room.players.length };
   }
 
   private roomByCode(code: string): Room | undefined {
@@ -227,13 +265,15 @@ export class RoomManager {
   register(socket: Socket): void {
     socket.on('room:create', (payload: { token?: string }, ack?: Ack) => {
       if (this.throttled(socket, 'create', 3, 60e3)) return ack?.({ ok: false, error: '操作太快啦，歇一下' });
-      const user = dbi.userBySession(String(payload?.token ?? '').trim());
+      const sessionToken = String(payload?.token ?? '').trim();
+      const user = dbi.userBySession(sessionToken);
       if (!user) return ack?.({ ok: false, error: '请先登录' });
       const code = this.genCode();
       const host: Player = {
         id: randomUUID(),
         token: randomUUID(),
         uid: user.uid,
+        sessionToken,
         name: user.name,
         seat: SEATS[0],
         score: 0,
@@ -251,6 +291,7 @@ export class RoomManager {
         createdAt: Date.now(),
         lastActivity: Date.now(),
         players: [host],
+        leftPlayers: [],
         entries: [],
         usedOnceCardIds: [],
         disabledCardIds: [],
@@ -266,7 +307,8 @@ export class RoomManager {
 
     socket.on('room:join', (payload: { code?: string; token?: string }, ack?: Ack) => {
       const code = String(payload?.code ?? '').trim().toUpperCase();
-      const user = dbi.userBySession(String(payload?.token ?? '').trim());
+      const sessionToken = String(payload?.token ?? '').trim();
+      const user = dbi.userBySession(sessionToken);
       if (!user) return ack?.({ ok: false, error: '请先登录' });
       const room = this.roomByCode(code);
       if (!room) return ack?.({ ok: false, error: '房间不存在，可能已结束或已过期' });
@@ -275,6 +317,7 @@ export class RoomManager {
       if (existing) {
         existing.name = user.name;
         existing.token = randomUUID();
+        existing.sessionToken = sessionToken;
         existing.connected = true;
         socket.data.playerId = existing.id;
         socket.data.code = code;
@@ -292,6 +335,7 @@ export class RoomManager {
         id: randomUUID(),
         token: randomUUID(),
         uid: user.uid,
+        sessionToken,
         name: user.name,
         seat,
         score: 0,
@@ -323,9 +367,20 @@ export class RoomManager {
     socket.on('room:leave', (_payload: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
-      this.removePlayer(room, player.id);
+      // 战局进行中离开：分数与最终名单照常归档
+      if (room.status === 'playing') {
+        room.leftPlayers.push({ name: player.name, seat: player.seat, score: player.score, uid: player.uid ?? null });
+      }
+      this.removePlayer(room, player.id, 'left');
       socket.leave(room.code);
       ack?.({ ok: true });
+      // 最后一人离开：房间自然解散
+      if (room.players.length === 0) {
+        if (room.gameId) dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
+        dbi.deleteLiveRoom(room.code);
+        this.rooms.delete(room.code);
+        return;
+      }
       this.broadcastRoom(room);
     });
 
@@ -438,76 +493,119 @@ export class RoomManager {
     });
 
     // ---------- 记分 ----------
-    socket.on(
-      'score:add',
-      (payload: { fromIds?: string[]; toId?: string; amountTotal?: number; note?: string }, ack?: Ack) => {
-        const { room, player } = this.ctx(socket);
-        if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
-        if (room.status !== 'playing') return ack?.({ ok: false, error: '战局尚未开始' });
-        if (!room.features.score) return ack?.({ ok: false, error: '本局未启用记分' });
-        if (this.throttled(socket, 'score', 20, 10e3)) return ack?.({ ok: false, error: '操作太快啦' });
-        const fromIds = Array.from(new Set((payload.fromIds ?? []).map(String)));
-        const toId = String(payload.toId ?? '');
-        const amountTotal = Math.floor(Number(payload.amountTotal));
-        if (fromIds.length === 0) return ack?.({ ok: false, error: '请选择付款方' });
-        if (!toId) return ack?.({ ok: false, error: '请选择收款方' });
-        if (fromIds.includes(toId)) return ack?.({ ok: false, error: '付款方与收款方不能相同' });
-        if (!Number.isFinite(amountTotal) || amountTotal <= 0)
-          return ack?.({ ok: false, error: '金额需为正整数' });
-        if (amountTotal > 1_000_000) return ack?.({ ok: false, error: '单笔分数上限 1,000,000' });
-        const to = room.players.find((p) => p.id === toId);
-        const froms = fromIds.map((id) => room.players.find((p) => p.id === id));
-        if (!to || froms.some((f) => !f)) return ack?.({ ok: false, error: '玩家不存在' });
-        const base = Math.floor(amountTotal / froms.length);
-        const splits = froms.map((f, i) => ({
-          name: f!.name,
-          amount: i === 0 ? amountTotal - base * (froms.length - 1) : base,
-        }));
-        // 更新分数
-        froms.forEach((f, i) => (f!.score -= splits[i].amount));
-        to.score += amountTotal;
-        const note = String(payload.note ?? '').trim().slice(0, 30) || undefined;
-        let entryId = 0;
-        if (room.gameId) {
-          entryId = dbi.addScoreEntry(room.gameId, room.roundNo, splits, to.name, amountTotal, note);
-        } else {
-          entryId = -(Date.now());
-        }
-        const entry: ScoreEntry = {
-          id: entryId,
-          roundNo: room.roundNo,
-          payers: splits,
-          payerIds: fromIds,
-          toId,
-          toName: to.name,
-          amountTotal,
-          note,
-          createdBy: player.id,
-          createdAt: Date.now(),
-        };
-        room.entries.push(entry);
-        ack?.({ ok: true });
-        this.broadcastRoom(room);
-      },
-    );
-
-    socket.on('score:undo', (payload: { entryId?: number }, ack?: Ack) => {
+    socket.on('score:add', (payload: { toId?: string; amountTotal?: number; note?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
+      if (room.status !== 'playing') return ack?.({ ok: false, error: '战局尚未开始' });
+      if (!room.features.score) return ack?.({ ok: false, error: '本局未启用记分' });
+      if (this.throttled(socket, 'score', 20, 10e3)) return ack?.({ ok: false, error: '操作太快啦' });
+      // 付款方固定为记账人本人：任何人只能从自己的分数给出，不能替别人扣分
+      const toId = String(payload.toId ?? '');
+      const amountTotal = Math.floor(Number(payload.amountTotal));
+      if (!toId) return ack?.({ ok: false, error: '请选择收款方' });
+      if (toId === player.id) return ack?.({ ok: false, error: '不能给自己记分' });
+      if (!Number.isFinite(amountTotal) || amountTotal <= 0)
+        return ack?.({ ok: false, error: '金额需为正整数' });
+      if (amountTotal > 1_000_000) return ack?.({ ok: false, error: '单笔分数上限 1,000,000' });
+      const to = room.players.find((p) => p.id === toId);
+      if (!to) return ack?.({ ok: false, error: '玩家不存在' });
+      // 更新分数
+      player.score -= amountTotal;
+      to.score += amountTotal;
+      const note = String(payload.note ?? '').trim().slice(0, 30) || undefined;
+      const split = { name: player.name, amount: amountTotal };
+      let entryId = 0;
+      if (room.gameId) {
+        entryId = dbi.addScoreEntry(room.gameId, room.roundNo, [split], to.name, amountTotal, note);
+      } else {
+        entryId = -(Date.now());
+      }
+      const entry: ScoreEntry = {
+        id: entryId,
+        roundNo: room.roundNo,
+        payers: [split],
+        payerIds: [player.id],
+        toId,
+        toName: to.name,
+        amountTotal,
+        note,
+        createdBy: player.id,
+        createdAt: Date.now(),
+      };
+      room.entries.push(entry);
+      ack?.({ ok: true });
+      this.broadcastRoom(room);
+    });
+
+    // 撤销需付款方与收款方双方确认：先挂请求（分数不动），双方都同意才回滚，记录永久留痕
+    socket.on('score:undo', (payload: { entryId?: number; reject?: boolean }, ack?: Ack) => {
+      const { room, player } = this.ctx(socket);
+      if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
+      if (this.throttled(socket, 'undo', 10, 10e3)) return ack?.({ ok: false, error: '操作太快啦' });
       const idx = room.entries.findIndex((e) => e.id === payload.entryId);
       const entry = idx >= 0 ? room.entries[idx] : undefined;
       if (!entry) return ack?.({ ok: false, error: '记录不存在' });
-      if (room.hostId !== player.id && entry.createdBy !== player.id)
-        return ack?.({ ok: false, error: '仅房主或记账人可撤销' });
-      entry.payerIds.forEach((pid, i) => {
-        const p = room.players.find((x) => x.id === pid);
-        if (p) p.score += entry.payers[i]?.amount ?? 0;
-      });
-      const to = room.players.find((x) => x.id === entry.toId);
-      if (to) to.score -= entry.amountTotal;
-      room.entries.splice(idx, 1);
-      if (entry.id > 0) dbi.deleteScoreEntry(entry.id);
-      ack?.({ ok: true });
+      if (entry.undone) return ack?.({ ok: false, error: '该笔已撤销' });
+      const isPayer = entry.createdBy === player.id;
+      const isReceiver = entry.toId === player.id;
+      const isHost = room.hostId === player.id;
+      if (!isPayer && !isReceiver && !isHost)
+        return ack?.({ ok: false, error: '仅付款方、收款方或房主可操作' });
+      // 双方 = 付款方（记账人）与收款方
+      const parties = Array.from(new Set([entry.createdBy, entry.toId]));
+
+      const executeUndo = () => {
+        entry.payerIds.forEach((pid, i) => {
+          const p = room.players.find((x) => x.id === pid);
+          if (p) p.score += entry.payers[i]?.amount ?? 0;
+        });
+        const to = room.players.find((x) => x.id === entry.toId);
+        if (to) to.score -= entry.amountTotal;
+        entry.undone = true;
+        entry.undoneAt = Date.now();
+        entry.undo = null;
+        if (entry.id > 0) dbi.markScoreEntryUndone(entry.id);
+      };
+
+      if (entry.undo) {
+        // 已有待确认的撤销请求
+        if (entry.undo.requestedBy === player.id) {
+          entry.undo = null;
+          ack?.({ ok: true, state: 'cancelled' });
+          this.broadcastRoom(room);
+          return;
+        }
+        if (parties.includes(player.id) && payload.reject) {
+          // 另一方拒绝 → 请求作废
+          entry.undo = null;
+          ack?.({ ok: true, state: 'rejected' });
+          this.broadcastRoom(room);
+          return;
+        }
+        if (parties.includes(player.id)) {
+          if (entry.undo.confirmed.includes(player.id))
+            return ack?.({ ok: false, error: '你已同意，等待另一方确认' });
+          entry.undo.confirmed.push(player.id);
+          if (parties.every((pid) => entry.undo!.confirmed.includes(pid))) {
+            executeUndo();
+            ack?.({ ok: true, state: 'undone' });
+          } else {
+            ack?.({ ok: true, state: 'awaiting' });
+          }
+          this.broadcastRoom(room);
+          return;
+        }
+        // 房主重复点击非自己发起的请求：无操作
+        return ack?.({ ok: false, error: '等待双方玩家确认' });
+      }
+
+      // 新建撤销请求；发起人若为付款/收款方则自动计入其同意票
+      entry.undo = {
+        requestedBy: player.id,
+        requestedAt: Date.now(),
+        confirmed: isPayer || isReceiver ? [player.id] : [],
+      };
+      ack?.({ ok: true, state: 'requested' });
       this.broadcastRoom(room);
     });
 
@@ -524,7 +622,7 @@ export class RoomManager {
     socket.on('game:end', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
-      const standings = room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null }));
+      const standings = this.standingsOf(room);
       if (room.gameId) dbi.finalizeGame(room.gameId, 'finished', standings);
       dbi.deleteLiveRoom(room.code);
       this.rooms.delete(room.code);
@@ -537,11 +635,7 @@ export class RoomManager {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (room.gameId) {
-        dbi.finalizeGame(
-          room.gameId,
-          'abandoned',
-          room.players.map((p) => ({ name: p.name, seat: p.seat, score: p.score, isHost: p.id === room.hostId, uid: p.uid ?? null })),
-        );
+        dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
       }
       dbi.deleteLiveRoom(room.code);
       this.rooms.delete(room.code);
@@ -612,7 +706,11 @@ export class RoomManager {
     return { room, player };
   }
 
-  private removePlayer(room: Room, playerId: string): void {
+  private removePlayer(
+    room: Room,
+    playerId: string,
+    reason: 'kicked' | 'sessionReplaced' | 'left' = 'kicked',
+  ): void {
     const idx = room.players.findIndex((p) => p.id === playerId);
     if (idx < 0) return;
     const [removed] = room.players.splice(idx, 1);
@@ -625,7 +723,7 @@ export class RoomManager {
       for (const sid of sockets) {
         const s = this.io.sockets.sockets.get(sid);
         if (s && s.data.playerId === playerId) {
-          s.emit('roomClosed', { reason: 'kicked' });
+          s.emit('roomClosed', { reason });
           s.leave(room.code);
         }
       }
@@ -635,5 +733,6 @@ export class RoomManager {
 
   destroy(): void {
     clearInterval(this.sweepTimer);
+    clearInterval(this.sessionTimer);
   }
 }

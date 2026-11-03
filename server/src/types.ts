@@ -22,6 +22,8 @@ export interface Player {
   token: string;
   /** 设备级永久用户 id（localStorage），用于跨战局归档与识别 */
   uid?: string | null;
+  /** 登录会话 token：单点登录检测用（在别处重新登录即失效） */
+  sessionToken?: string | null;
   name: string;
   seat: string;
   score: number;
@@ -32,6 +34,15 @@ export interface Player {
 export interface PayerSplit {
   name: string;
   amount: number;
+}
+
+/** 流水撤销：需付款方与收款方双方确认，全程留痕 */
+export interface UndoRequest {
+  /** 发起人玩家 id */
+  requestedBy: string;
+  requestedAt: number;
+  /** 已同意的玩家 id（发起人若为付款/收款方则自动计入其一票） */
+  confirmed: string[];
 }
 
 export interface ScoreEntry {
@@ -46,6 +57,11 @@ export interface ScoreEntry {
   note?: string;
   createdBy: string;
   createdAt: number;
+  /** 待确认的撤销请求（无请求时为空） */
+  undo?: UndoRequest | null;
+  /** 已撤销（双方确认后置位，记录保留在流水里） */
+  undone?: boolean;
+  undoneAt?: number;
 }
 
 export interface RoomFeatures {
@@ -53,6 +69,14 @@ export interface RoomFeatures {
   score: boolean;
   /** 条件卡 */
   cards: boolean;
+}
+
+/** 战局中途离开的玩家：分数保留，最终结算照常归档 */
+export interface LeftPlayer {
+  name: string;
+  seat: string;
+  score: number;
+  uid: string | null;
 }
 
 export interface Room {
@@ -67,6 +91,8 @@ export interface Room {
   createdAt: number;
   lastActivity: number;
   players: Player[];
+  /** 战局进行中离开的玩家（含最终分数，结算时并入 standings） */
+  leftPlayers: LeftPlayer[];
   entries: ScoreEntry[];
   /** 本次战局已使用的“一晚限一次”卡 */
   usedOnceCardIds: string[];
@@ -123,6 +149,7 @@ export interface HistoryDetail extends HistoryListItem {
     amountTotal: number;
     note: string | null;
     createdAt: number;
+    undone?: boolean;
   }[];
   draws: {
     roundNo: number;

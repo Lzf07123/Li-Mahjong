@@ -54,7 +54,7 @@ async function main() {
     const playing = await startP;
     const ids = playing.players.map((p) => p.id);
     const addP = waitRev(s, snap1.rev + 3);
-    await emit(s, 'score:add', { fromIds: [ids[1]], toId: ids[0], amountTotal: 66, note: '重启前记的账' });
+    await emit(s2, 'score:add', { toId: ids[0], amountTotal: 66, note: '重启前记的账' });
     const after = await addP;
     const host = after.players.find((p) => p.id === ids[0]);
     // 等待服务端防抖落盘（400ms）完成，避免立刻重启丢快照

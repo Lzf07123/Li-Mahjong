@@ -136,6 +136,8 @@ async function main() {
   const createResp = await emit(clients[0], 'room:create', { token: players[0].token });
   assert(createResp.ok && /^[A-Z2-9]{4}$/.test(createResp.code), `创建房间 code=${createResp.code}`);
   const code = createResp.code;
+  const aliveNow = await fetch(`${URL}/api/room/${code}/alive`).then((r) => r.json());
+  assert(aliveNow.alive === true && aliveNow.status === 'lobby', '建房后房间存活查询（lobby）');
   const myIds = [createResp.playerId];
   await waitRev(clients[0], 1);
   assert(lastSnap.get(clients[0]).players.length === 1, '房主进入大厅');
@@ -186,22 +188,29 @@ async function main() {
 
   console.log('3) 记分与撤销');
   const addP = allRev(clients, Math.max(...clients.map(revOf)));
-  const addResp = await emit(clients[1], 'score:add', {
-    fromIds: [myIds[2], myIds[3]],
-    toId: myIds[1],
-    amountTotal: 30,
-    note: '自摸',
-  });
-  assert(addResp.ok, '记一笔：玩家3、玩家4 各付 15 给玩家2');
+  const addResp = await emit(clients[1], 'score:add', { toId: myIds[2], amountTotal: 30, note: '点炮' });
+  assert(addResp.ok, '记一笔：玩家2 付 30 给玩家3');
   const addStates = await addP;
   const sc = (states, i) => states[0].players.find((p) => p.id === myIds[i]).score;
-  assert(sc(addStates, 1) === 30 && sc(addStates, 2) === -15 && sc(addStates, 3) === -15, '总分实时同步（+30/-15/-15）');
+  assert(sc(addStates, 1) === -30 && sc(addStates, 2) === 30, '总分实时同步（-30/+30）');
 
-  const undoP = allRev(clients, Math.max(...clients.map(revOf)));
-  const undoResp = await emit(clients[1], 'score:undo', { entryId: addStates[0].entries[0].id });
-  assert(undoResp.ok, '记账人撤销成功');
-  const undoStates = await undoP;
-  assert(undoStates[0].players.every((p) => p.score === 0), '撤销后分数归零');
+  // 撤销需双方确认且留痕：发起 → 分数冻结 → 对方确认 → 回滚并标记已撤销
+  const reqP = allRev(clients, Math.max(...clients.map(revOf)));
+  const reqResp = await emit(clients[1], 'score:undo', { entryId: addStates[0].entries[0].id });
+  assert(reqResp.ok, '付款方发起撤销请求');
+  const reqStates = await reqP;
+  assert(!!reqStates[0].entries[0].undo && !reqStates[0].entries[0].undone, '流水留痕：撤销待确认');
+  assert(sc(reqStates, 1) === -30 && sc(reqStates, 2) === 30, '请求阶段分数不变');
+
+  const deny = await emit(clients[3], 'score:undo', { entryId: addStates[0].entries[0].id });
+  assert(!deny.ok, '无关玩家不能发起或确认撤销');
+
+  const okP = allRev(clients, Math.max(...clients.map(revOf)));
+  const okResp = await emit(clients[2], 'score:undo', { entryId: addStates[0].entries[0].id });
+  assert(okResp.ok, '收款方确认 → 撤销执行');
+  const okStates = await okP;
+  assert(okStates[0].entries[0].undone === true, '已撤销记录保留在流水');
+  assert(okStates[0].players.every((p) => p.score === 0), '双方同意后分数归零');
 
   console.log('4) 亮牌 / 重摸 / 玩法开关 / 方位');
   const base1 = Math.max(...clients.map(revOf));
@@ -233,10 +242,10 @@ async function main() {
   assert(nrResp.ok, '进入下一局（无条件卡）');
   const nr3 = await nr3P;
   assert(nr3.every((s) => s.players.every((p) => !p.hasCard)), '条件卡关闭后不再发牌');
-  const addOk = await emit(clients[0], 'score:add', { fromIds: [myIds[1]], toId: myIds[0], amountTotal: 10 });
+  const addOk = await emit(clients[0], 'score:add', { toId: myIds[1], amountTotal: 10 });
   assert(addOk.ok, '条件卡关闭时记分仍可用');
   await emit(clients[0], 'room:setFeatures', { score: false, cards: true });
-  const scOff = await emit(clients[0], 'score:add', { fromIds: [myIds[1]], toId: myIds[0], amountTotal: 5 });
+  const scOff = await emit(clients[0], 'score:add', { toId: myIds[1], amountTotal: 5 });
   assert(!scOff.ok, '记分关闭后记账被拒');
   await emit(clients[0], 'room:setFeatures', { score: true, cards: true });
   const rdP = Promise.all(clients.map((c) => waitPred(c, (s) => !!s.players.find((p) => p.id === myIds[2])?.hasCard)));
@@ -244,13 +253,19 @@ async function main() {
   assert(rd.ok, '重新启用条件卡后全员重摸');
   await rdP;
 
-  console.log('6) 记账后结束战局');
-  await emit(clients[0], 'score:add', { fromIds: [myIds[0]], toId: myIds[2], amountTotal: 88, note: '点炮' });
-  const endP = Promise.all(clients.map((c) => new Promise((resolve) => c.once('gameEnded', resolve))));
+  console.log('6) 战局中离场与结束');
+  // 玩家4 战局中途离开：分数照常归档，最终结算仍含此人
+  const leaveP = allRev(clients.slice(0, 3), Math.max(...clients.slice(0, 3).map(revOf)));
+  const leaveResp = await emit(clients[3], 'room:leave');
+  assert(leaveResp.ok, '战局中玩家4 主动离开');
+  const leaveStates = await leaveP;
+  assert(leaveStates[0].players.length === 3, '离场后剩余 3 人');
+  await emit(clients[0], 'score:add', { toId: myIds[2], amountTotal: 88, note: '点炮' });
+  const endP = Promise.all(clients.slice(0, 3).map((c) => new Promise((resolve) => c.once('gameEnded', resolve))));
   const endResp = await emit(clients[0], 'game:end');
   assert(endResp.ok, '房主结束战局');
   const ended = await endP;
-  assert(ended.length === 4 && ended[0].standings.length === 4, '全员收到结算 standings');
+  assert(ended.length === 3 && ended[0].standings.length === 4, '在场玩家收到结算（含离场者 4 人名单）');
 
   console.log('7) 历史战绩 REST');
   const hist = await fetch(`${URL}/api/history`).then((r) => r.json());
@@ -258,9 +273,13 @@ async function main() {
   const latest = hist.items[0];
   assert(latest.status === 'finished' && latest.players.length === 4, '最新战局已归档（finished, 4人）');
   const detail = await fetch(`${URL}/api/history/${latest.id}`).then((r) => r.json());
-  assert(detail.entries.length === 2, `历史流水共 2 笔（实际 ${detail.entries.length}）`);
+  assert(detail.entries.length === 3, `历史流水共 3 笔（含撤销留痕，实际 ${detail.entries.length}）`);
   assert(detail.entries.some((e) => e.amountTotal === 88), '历史流水含 88 分记账');
+  assert(detail.entries.some((e) => e.undone), '历史流水含已撤销留痕');
   assert(detail.players.some((p) => p.uid === players[0].uid), '归档玩家携带 uid');
+  assert(detail.players.some((p) => p.seat === '北' && p.finalScore === 0), '战局中离场的玩家（北位）照常归档');
+  const aliveAfter = await fetch(`${URL}/api/room/${code}/alive`).then((r) => r.json());
+  assert(aliveAfter.alive === false, '战局结束后房间存活查询 → false');
 
   console.log('8) 账号自助 / 管理后台 / 页脚设置');
   const auth0 = { ...BYPASS, authorization: `Bearer ${players[0].token}` };

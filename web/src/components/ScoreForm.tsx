@@ -1,37 +1,27 @@
 import { useState } from 'react';
-import type { Snapshot } from '../types';
+import type { PlayerView, Snapshot } from '../types';
 import { emitAck } from '../socket';
 import { useApp } from '../App';
 import { SeatBadge } from './common';
 
 const QUICK = [5, 10, 20, 50, 100];
 
-export function ScoreForm({ snap }: { snap: Snapshot }) {
+export function ScoreForm({ snap, me }: { snap: Snapshot; me: PlayerView }) {
   const { toast } = useApp();
-  const [fromIds, setFromIds] = useState<string[]>([]);
   const [toId, setToId] = useState<string | null>(null);
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const togglePayer = (id: string) => {
-    setFromIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
-    if (toId === id) setToId(null);
-  };
-
-  const pickReceiver = (id: string) => {
-    setToId(id);
-    setFromIds((cur) => cur.filter((x) => x !== id));
-  };
+  const others = snap.players.filter((p) => p.id !== me.id);
 
   const submit = async () => {
     const total = parseInt(amount, 10);
-    if (fromIds.length === 0) return toast('选择谁付钱（可多选）', 'error');
-    if (!toId) return toast('选择谁收钱', 'error');
+    if (!toId) return toast('选择给谁', 'error');
     if (!Number.isInteger(total) || total <= 0) return toast('分数需为正整数', 'error');
     setBusy(true);
     try {
-      await emitAck('score:add', { fromIds, toId, amountTotal: total, note: note.trim() });
+      await emitAck('score:add', { toId, amountTotal: total, note: note.trim() });
       setAmount('');
       setNote('');
       toast('✓ 记账成功', 'success');
@@ -42,40 +32,27 @@ export function ScoreForm({ snap }: { snap: Snapshot }) {
     }
   };
 
-  const perPayer = fromIds.length > 0 && /^\d+$/.test(amount) && parseInt(amount, 10) > 0
-    ? Math.floor(parseInt(amount, 10) / fromIds.length)
-    : null;
-
   return (
     <div className="panel p-4">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-white/85">
         <span>✍️</span> 记一笔
       </h3>
 
-      <p className="mb-1.5 text-xs font-semibold text-white/55">谁付钱？（可多选，自动均分）</p>
+      <p className="mb-1.5 text-xs font-semibold text-white/55">谁付钱？</p>
       <div className="flex flex-wrap gap-2">
-        {snap.players.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => togglePayer(p.id)}
-            className={`flex min-h-[40px] items-center gap-1.5 rounded-full border px-3 text-sm font-semibold transition ${
-              fromIds.includes(p.id)
-                ? 'border-red-400/60 bg-red-500/25 text-red-100'
-                : 'border-white/15 bg-black/25 text-white/75 hover:bg-white/10'
-            }`}
-          >
-            <SeatBadge seat={p.seat} />
-            {p.name}
-          </button>
-        ))}
+        <span className="flex min-h-[40px] items-center gap-1.5 rounded-full border border-red-400/60 bg-red-500/25 px-3 text-sm font-semibold text-red-100">
+          <SeatBadge seat={me.seat} />
+          {me.name}（我）
+        </span>
       </div>
+      <p className="mt-1.5 text-[10px] text-white/35">只能从自己的分数给出 · 收入由对方自己记</p>
 
-      <p className="mb-1.5 mt-4 text-xs font-semibold text-white/55">谁收钱？</p>
+      <p className="mb-1.5 mt-4 text-xs font-semibold text-white/55">给谁？</p>
       <div className="flex flex-wrap gap-2">
-        {snap.players.map((p) => (
+        {others.map((p) => (
           <button
             key={p.id}
-            onClick={() => pickReceiver(p.id)}
+            onClick={() => setToId(p.id)}
             className={`flex min-h-[40px] items-center gap-1.5 rounded-full border px-3 text-sm font-semibold transition ${
               toId === p.id
                 ? 'border-emerald-400/60 bg-emerald-500/25 text-emerald-100'
@@ -86,6 +63,7 @@ export function ScoreForm({ snap }: { snap: Snapshot }) {
             {p.name}
           </button>
         ))}
+        {others.length === 0 && <span className="py-2 text-xs text-white/40">暂无其他玩家</span>}
       </div>
 
       <div className="mt-4 flex items-center gap-2">
@@ -112,11 +90,6 @@ export function ScoreForm({ snap }: { snap: Snapshot }) {
           </button>
         ))}
       </div>
-      {perPayer !== null && fromIds.length > 1 && (
-        <p className="mt-2 text-xs text-gold">
-          每人付 {perPayer} 分{parseInt(amount, 10) % fromIds.length !== 0 ? '（首位多付零头）' : ''}
-        </p>
-      )}
 
       <input
         className="input mt-3"

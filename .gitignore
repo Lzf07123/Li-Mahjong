@@ -2,6 +2,7 @@
 node_modules/
 dist/
 web/dist/
+*.tsbuildinfo
 
 # 本地数据与密钥
 .data/

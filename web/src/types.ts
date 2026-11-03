@@ -22,11 +22,17 @@ export interface ScoreEntryView {
   id: number;
   roundNo: number;
   payers: PayerSplit[];
+  toId?: string;
   toName: string;
   amountTotal: number;
   note?: string;
   createdBy: string;
   createdAt: number;
+  /** 待确认的撤销请求 */
+  undo?: { requestedBy: string; requestedAt: number; confirmed: string[] } | null;
+  /** 已撤销（留痕） */
+  undone?: boolean;
+  undoneAt?: number;
 }
 
 export interface RoomFeatures {
@@ -96,6 +102,7 @@ export interface HistoryDetailData extends HistoryItem {
     amountTotal: number;
     note: string | null;
     createdAt: number;
+    undone?: boolean;
   }[];
   draws: { roundNo: number; playerName: string; cardText: string; category: string }[];
 }

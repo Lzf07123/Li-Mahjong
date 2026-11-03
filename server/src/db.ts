@@ -109,6 +109,11 @@ try {
   /* 列已存在 */
 }
 try {
+  db.exec("ALTER TABLE score_entries ADD COLUMN undone INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* 列已存在 */
+}
+try {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL");
 } catch {
   /* 索引已存在 */
@@ -169,6 +174,8 @@ export function setPasswordByUid(uid: string, password: string): boolean {
 }
 
 export function createSession(uid: string, days = 30): string {
+  // 单点登录：同一账号同一时间仅保留最新一处会话
+  db.prepare('DELETE FROM sessions WHERE uid = ?').run(uid);
   const token = randomUUID() + randomUUID().replace(/-/g, '');
   db.prepare('INSERT INTO sessions (token, uid, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
     token,
@@ -277,8 +284,9 @@ export function addScoreEntry(
   return Number(info.lastInsertRowid);
 }
 
-export function deleteScoreEntry(id: number): void {
-  db.prepare('DELETE FROM score_entries WHERE id = ?').run(id);
+/** 撤销留痕：不删行，只打标 */
+export function markScoreEntryUndone(id: number): void {
+  db.prepare('UPDATE score_entries SET undone = 1 WHERE id = ?').run(id);
 }
 
 export function addConditionDraw(
@@ -404,7 +412,7 @@ export function historyDetail(id: number): HistoryDetail | null {
     }[]
   ).map((p) => ({ name: p.name, seat: p.seat, finalScore: p.final_score, isHost: !!p.is_host, uid: p.uid }));
   const entries = (
-    db.prepare('SELECT id, round_no, payers, to_name, amount_total, note, created_at FROM score_entries WHERE game_id = ? ORDER BY id').all(id) as {
+    db.prepare('SELECT id, round_no, payers, to_name, amount_total, note, created_at, undone FROM score_entries WHERE game_id = ? ORDER BY id').all(id) as {
       id: number;
       round_no: number;
       payers: string;
@@ -412,6 +420,7 @@ export function historyDetail(id: number): HistoryDetail | null {
       amount_total: number;
       note: string | null;
       created_at: number;
+      undone: number;
     }[]
   ).map((e) => ({
     id: e.id,
@@ -421,6 +430,7 @@ export function historyDetail(id: number): HistoryDetail | null {
     amountTotal: e.amount_total,
     note: e.note,
     createdAt: e.created_at,
+    undone: !!e.undone,
   }));
   const draws = (
     db.prepare('SELECT round_no, player_name, card_text, category FROM condition_draws WHERE game_id = ? ORDER BY id').all(id) as {

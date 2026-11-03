@@ -1,4 +1,5 @@
-import type { Snapshot } from '../types';
+import type { ReactNode } from 'react';
+import type { ScoreEntryView, Snapshot } from '../types';
 import { emitAck } from '../socket';
 import { useApp } from '../App';
 import { ConfirmButton, fmtTime } from './common';
@@ -7,10 +8,10 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
   const { toast } = useApp();
   const entries = snap.entries;
 
-  const undo = async (entryId: number) => {
+  const act = async (entryId: number, okMsg: (state?: string) => string, reject = false) => {
     try {
-      await emitAck('score:undo', { entryId });
-      toast('已撤销该笔记录', 'success');
+      const r = await emitAck('score:undo', { entryId, reject });
+      toast(okMsg(r.state as string | undefined), 'success');
     } catch (e) {
       toast((e as Error).message, 'error');
     }
@@ -56,45 +57,112 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
               <span className="h-px flex-1 bg-white/10" />
             </div>
             <div className="space-y-1.5">
-              {g.items.map((e) => {
-                const canUndo = isHost || e.createdBy === myId;
-                return (
-                  <div key={e.id} className="group flex items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-1.5 text-[13px]">
-                        <span className="font-semibold text-red-200">{e.payers.map((p) => p.name).join('、')}</span>
-                        <span className="text-white/40">→</span>
-                        <span className="font-semibold text-emerald-200">{e.toName}</span>
-                        <span className="ml-1 text-base font-black text-white">
-                          {e.amountTotal}
-                          {e.payers.length > 1 && (
-                            <span className="ml-1 text-[10px] font-normal text-white/45">
-                              （{e.payers.map((p) => `-${p.amount}`).join(' / ')}）
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/35">
-                        {e.note && <span className="rounded bg-white/10 px-1.5 py-0.5 font-semibold text-white/60">{e.note}</span>}
-                        <span>{fmtTime(e.createdAt)}</span>
-                      </div>
-                    </div>
-                    {canUndo && (
-                      <ConfirmButton
-                        className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10"
-                        confirmText="确认撤销？"
-                        onConfirm={() => undo(e.id)}
-                      >
-                        撤销
-                      </ConfirmButton>
-                    )}
-                  </div>
-                );
-              })}
+              {g.items.map((e) => (
+                <LedgerRow key={e.id} e={e} myId={myId} isHost={isHost} act={act} />
+              ))}
             </div>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function LedgerRow({
+  e,
+  myId,
+  isHost,
+  act,
+}: {
+  e: ScoreEntryView;
+  myId: string | null;
+  isHost: boolean;
+  act: (entryId: number, okMsg: (state?: string) => string, reject?: boolean) => Promise<void>;
+}) {
+  // 撤销相关方：付款方（记账人）与收款方；房主可代发起
+  const isParty = !!myId && (e.createdBy === myId || e.toId === myId);
+  const canRequest = isParty || isHost;
+  const iAmRequester = !!e.undo && e.undo.requestedBy === myId;
+  // 我已同意（含作为发起人自动计票）但撤销未执行
+  const iConfirmed = !!e.undo && !!myId && e.undo.confirmed.includes(myId);
+  // 我是尚未确认的一方，可以点「同意」
+  const canConfirm = !!e.undo && isParty && !iConfirmed && !iAmRequester;
+
+  let action: ReactNode = null;
+  if (e.undone) {
+    action = null;
+  } else if (e.undo) {
+    action = iAmRequester ? (
+      <button
+        className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10"
+        onClick={() => act(e.id, () => '已取消撤销请求')}
+      >
+        取消请求
+      </button>
+    ) : canConfirm ? (
+      <div className="flex shrink-0 gap-1.5">
+        <button
+          className="rounded-lg border border-emerald-400/50 bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-100"
+          onClick={() => act(e.id, (s) => (s === 'awaiting' ? '已同意，等待另一方确认' : '已撤销该笔记录'))}
+        >
+          同意
+        </button>
+        <ConfirmButton
+          className="rounded-lg border border-white/15 px-2.5 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10"
+          confirmText="拒绝撤销？"
+          onConfirm={() => act(e.id, () => '已拒绝，撤销请求作废', true)}
+        >
+          拒绝
+        </ConfirmButton>
+      </div>
+    ) : null;
+  } else if (canRequest) {
+    action = (
+      <ConfirmButton
+        className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10"
+        confirmText="发起撤销？需对方同意"
+        onConfirm={() => act(e.id, () => '撤销请求已发出，等待对方确认')}
+      >
+        撤销
+      </ConfirmButton>
+    );
+  }
+
+  return (
+    <div
+      className={`group flex items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2 ${
+        e.undone ? 'opacity-45' : ''
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-1.5 text-[13px]">
+          <span className={`font-semibold text-red-200 ${e.undone ? 'line-through' : ''}`}>
+            {e.payers.map((p) => p.name).join('、')}
+          </span>
+          <span className="text-white/40">→</span>
+          <span className={`font-semibold text-emerald-200 ${e.undone ? 'line-through' : ''}`}>{e.toName}</span>
+          <span className={`ml-1 text-base font-black text-white ${e.undone ? 'line-through' : ''}`}>
+            {e.amountTotal}
+            {e.payers.length > 1 && (
+              <span className="ml-1 text-[10px] font-normal text-white/45">
+                （{e.payers.map((p) => `-${p.amount}`).join(' / ')}）
+              </span>
+            )}
+          </span>
+          {e.undone ? (
+            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-bold text-white/60">已撤销</span>
+          ) : e.undo ? (
+            <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
+              {iAmRequester ? '⏳ 等待对方确认' : canConfirm ? '待你确认' : '撤销申请中'}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/35">
+          {e.note && <span className="rounded bg-white/10 px-1.5 py-0.5 font-semibold text-white/60">{e.note}</span>}
+          <span>{fmtTime(e.undoneAt ?? e.createdAt)}</span>
+        </div>
+      </div>
+      {action}
     </div>
   );
 }

@@ -176,6 +176,7 @@ app.post('/api/auth/login', (req, res) => {
   if (!user || !dbi.verifyPassword(password, user.pass))
     return res.status(401).json({ error: '登录名或密码错误' });
   const token = dbi.createSession(user.uid);
+  rm.evictUid(user.uid); // 单点登录：立即请离旧设备
   res.json({ token, user: { uid: user.uid, name: user.name } });
 });
 
@@ -281,6 +282,15 @@ app.get('/api/history/:id', (req, res) => {
 
 app.get('/api/stats', (_req, res) => {
   res.json({ items: dbi.stats() });
+});
+
+// 房间存活查询（首页「回到战局」用；读内存实时态，房间码本身就是准入凭据，仅返回概要）
+app.get('/api/room/:code/alive', (req, res) => {
+  const code = String(req.params.code ?? '').toUpperCase();
+  if (!/^[A-Z2-9]{4}$/.test(code)) return res.json({ alive: false });
+  const s = rm.peek(code);
+  if (!s) return res.json({ alive: false });
+  res.json({ alive: true, status: s.status, roundNo: s.roundNo, playerCount: s.playerCount });
 });
 
 const rm = new RoomManager(io);

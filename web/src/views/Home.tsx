@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { emitRoomAck, api, loadAuth, clearAuth, saveSession, type AuthUser, type MeInfo } from '../socket';
+import { emitRoomAck, api, loadAuth, clearAuth, saveSession, latestSavedRoom, clearSession, type AuthUser, type MeInfo } from '../socket';
 import { useApp } from '../App';
 import { fmtTime, scoreColor } from '../components/common';
 import { AuthForm } from '../components/AuthForm';
@@ -20,10 +20,24 @@ export default function Home() {
   const [stats, setStats] = useState<StatsItem[] | null>(null);
   const [recent, setRecent] = useState<HistoryItem[] | null>(null);
   const [me, setMe] = useState<MeInfo | null>(null);
+  // 本地留有进行中战局的会话 → 首页显示「回到战局」
+  const [resume, setResume] = useState<{ code: string; status: string; roundNo: number; playerCount: number } | null>(null);
 
   useEffect(() => {
     api.stats().then((r) => setStats(r.items)).catch(() => setStats([]));
     api.history().then((r) => setRecent(r.items.slice(0, 3))).catch(() => setRecent([]));
+  }, []);
+
+  useEffect(() => {
+    const c = latestSavedRoom();
+    if (!c) return;
+    fetch(`/api/room/${c}/alive`)
+      .then((r) => r.json())
+      .then((j: { alive: boolean; status?: string; roundNo?: number; playerCount?: number }) => {
+        if (j.alive) setResume({ code: c, status: j.status ?? 'lobby', roundNo: j.roundNo ?? 0, playerCount: j.playerCount ?? 0 });
+        else clearSession(c); // 房间已不存在，顺手清理本地会话
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -73,19 +87,40 @@ export default function Home() {
   return (
     <div className="flex flex-1 flex-col px-4 pb-10 pt-6 sm:pt-10">
       {/* Hero */}
-      <div className="relative mb-6 text-center sm:mb-10">
-        <div className="pointer-events-none absolute inset-x-0 -top-4 mx-auto flex max-w-md justify-between opacity-20 select-none">
-          <span className="animate-float-slow text-4xl">🀄</span>
-          <span className="animate-float-slow text-3xl [animation-delay:0.8s]">🀅</span>
-          <span className="animate-float-slow text-4xl [animation-delay:1.6s]">🀆</span>
-          <span className="animate-float-slow text-3xl [animation-delay:2.4s]">🀇</span>
+      <div className="relative mb-7 text-center sm:mb-10">
+        {/* 两侧漂浮牌簇（装饰） */}
+        <div className="pointer-events-none absolute -left-3 top-8 hidden -rotate-[14deg] text-5xl opacity-[0.14] blur-[1px] select-none sm:block">
+          <span className="animate-float-slow inline-block">🀄</span>
         </div>
-        <div className="text-5xl">🀄</div>
-        <h1 className="mt-2 text-3xl font-black tracking-wide sm:text-4xl">
-          雀记 <span className="text-gold">·</span> 麻将记分
+        <div className="pointer-events-none absolute -left-7 top-24 hidden rotate-[9deg] text-3xl opacity-[0.09] select-none sm:block">
+          <span className="animate-float-slow inline-block [animation-delay:1.4s]">🀇</span>
+        </div>
+        <div className="pointer-events-none absolute -right-3 top-9 hidden rotate-[14deg] text-5xl opacity-[0.14] blur-[1px] select-none sm:block">
+          <span className="animate-float-slow inline-block [animation-delay:0.7s]">🀅</span>
+        </div>
+        <div className="pointer-events-none absolute -right-7 top-26 hidden -rotate-[8deg] text-3xl opacity-[0.09] select-none sm:block">
+          <span className="animate-float-slow inline-block [animation-delay:2.1s]">🀆</span>
+        </div>
+
+        {/* 发光的麻将牌徽章 */}
+        <div className="relative mx-auto mb-3 w-fit">
+          <div className="absolute -inset-3 rounded-3xl bg-gold/25 blur-xl" />
+          <div className="paper-card relative flex h-14 w-11 -rotate-6 items-center justify-center rounded-xl text-3xl shadow-xl">
+            <span>🀄</span>
+          </div>
+        </div>
+
+        <h1 className="text-4xl font-black tracking-wide sm:text-5xl">
+          <span className="text-gold-grad">雀记</span>
+          <span className="mx-2 text-xl text-white/25 sm:text-2xl">·</span>
+          <span className="text-white/95">麻将记分</span>
         </h1>
-        <p className="mt-1.5 text-sm text-white/60">
-          房间码实时同步记分 · 每局抽整蛊条件卡 · 战局自动归档复盘
+        <p className="mx-auto mt-3 flex max-w-lg flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-xs text-white/55 sm:text-sm">
+          <span>房间码实时同步记分</span>
+          <i className="h-1 w-1 rounded-full bg-gold/70" />
+          <span>每局抽整蛊条件卡</span>
+          <i className="h-1 w-1 rounded-full bg-gold/70" />
+          <span>战局自动归档复盘</span>
         </p>
       </div>
 
@@ -134,6 +169,24 @@ export default function Home() {
                 </button>
               </div>
 
+              {resume && (
+                <button
+                  className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-gold/50 bg-gold/10 p-3.5 text-left transition hover:bg-gold/15"
+                  onClick={() => go({ name: 'room', code: resume.code })}
+                >
+                  <span className="text-2xl">🀫</span>
+                  <span className="min-w-0 flex-1">
+                    <b className="block text-sm font-bold text-gold">
+                      {resume.status === 'playing' ? `战局进行中 · 第 ${resume.roundNo} 局` : '房间等待开局'}
+                    </b>
+                    <span className="text-xs text-white/55">
+                      房间 {resume.code} · {resume.playerCount} 人在场 · 点击回到战局
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-lg text-gold">›</span>
+                </button>
+              )}
+
               <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl bg-black/30 p-1">
                 {(['create', 'join'] as const).map((m) => (
                   <button
@@ -179,7 +232,7 @@ export default function Home() {
         <div className="flex flex-col gap-4">
           <div className="panel p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-white/80">📊 战绩速览</h2>
+              <h2 className="text-sm font-bold text-white/85">📊 战绩速览</h2>
               <button className="text-xs font-semibold text-gold hover:underline" onClick={() => go({ name: 'history' })}>
                 全部战绩 →
               </button>
@@ -191,14 +244,18 @@ export default function Home() {
             ) : (
               <>
                 <div className="grid grid-cols-3 gap-2">
-                  {stats.slice(0, 3).map((s) => (
-                    <div key={s.name} className="rounded-xl border border-white/10 bg-black/20 p-2.5 text-center">
+                  {stats.slice(0, 3).map((s, i) => (
+                    <div
+                      key={s.name}
+                      className="card-hover rounded-xl border border-white/10 bg-gradient-to-b from-black/30 to-black/10 p-2.5 text-center"
+                    >
                       <div className="truncate text-xs font-semibold">{s.name}</div>
-                      <div className={`mt-1 text-lg font-black ${scoreColor(s.total)}`}>
+                      <div className={`num mt-1 text-lg font-black ${scoreColor(s.total)}`}>
                         {s.total > 0 ? '+' : ''}
                         {s.total}
                       </div>
                       <div className="text-[10px] text-white/40">{s.games} 场 · 赢 {s.wins}</div>
+                      {i === 0 && <div className="mt-1 text-[10px]">👑</div>}
                     </div>
                   ))}
                 </div>
@@ -207,7 +264,7 @@ export default function Home() {
                     <button
                       key={h.id}
                       onClick={() => go({ name: 'historyDetail', id: h.id })}
-                      className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-left text-xs hover:bg-white/10"
+                      className="card-hover flex w-full items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-left text-xs hover:border-gold/30 hover:bg-white/10"
                     >
                       <span className="text-white/50">{fmtTime(h.endedAt ?? h.startedAt)}</span>
                       <span className="truncate px-2 text-white/70">
@@ -223,14 +280,29 @@ export default function Home() {
 
           {stats && stats.length > 0 && (
             <div className="panel p-4">
-              <h2 className="mb-2 text-sm font-bold text-white/80">💰 累计盈亏榜</h2>
-              <div className="space-y-1.5">
+              <h2 className="mb-2.5 text-sm font-bold text-white/85">💰 累计盈亏榜</h2>
+              <div className="space-y-1">
                 {stats.slice(0, 6).map((s, i) => (
-                  <div key={s.name} className="flex items-center gap-2 text-sm">
-                    <span className="w-5 text-center text-xs text-white/40">{i + 1}</span>
-                    <span className="flex-1 truncate font-semibold">{s.name}</span>
+                  <div
+                    key={s.name}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${i === 0 ? 'bg-gradient-to-r from-gold/[0.14] to-transparent' : ''}`}
+                  >
+                    <span
+                      className={`num flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[11px] font-black ${
+                        i === 0
+                          ? 'bg-gradient-to-br from-gold to-amber-600 text-felt-950'
+                          : i === 1
+                            ? 'bg-white/20 text-white/85'
+                            : i === 2
+                              ? 'bg-amber-800/60 text-amber-200/90'
+                              : 'text-white/35'
+                      }`}
+                    >
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-semibold">{s.name}</span>
                     <span className="text-[10px] text-white/40">{s.games}场</span>
-                    <span className={`w-16 text-right font-black ${scoreColor(s.total)}`}>
+                    <span className={`num w-16 text-right font-black ${scoreColor(s.total)}`}>
                       {s.total > 0 ? '+' : ''}
                       {s.total}
                     </span>

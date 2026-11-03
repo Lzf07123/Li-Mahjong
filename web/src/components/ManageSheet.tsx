@@ -118,6 +118,10 @@ export function ManageSheet({
             📚 题库管理（启停 / 自定义条件）
           </button>
 
+          <ConfirmButton className="btn-ghost w-full" confirmText="确认离开？房主将转移" onConfirm={() => act('room:leave')}>
+            🚪 离开战局（分数照常归档）
+          </ConfirmButton>
+
           <div className="grid grid-cols-2 gap-2 pt-1">
             {scoreOn && (
               <ConfirmButton

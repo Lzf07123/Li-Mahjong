@@ -229,17 +229,17 @@ export default function Admin() {
 
           {/* 用户管理 */}
           <div className="panel p-4">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
               <h2 className="text-sm font-bold text-white/85">👥 用户管理</h2>
-              <div className="ml-auto flex min-w-0 flex-1 gap-2 sm:max-w-xs">
+              <div className="flex gap-2 sm:ml-auto sm:w-72">
                 <input
-                  className="input !min-h-[38px] text-sm"
-                  placeholder="搜索昵称 / uid"
+                  className="input !min-h-[40px] min-w-0 flex-1 text-sm"
+                  placeholder="搜索昵称 / 登录名"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && refresh()}
                 />
-                <button className="btn-jade !min-h-[38px] shrink-0 !px-3 text-xs" onClick={refresh}>
+                <button className="btn-jade !min-h-[40px] shrink-0 !px-4 text-xs" onClick={refresh}>
                   搜索
                 </button>
               </div>
@@ -251,8 +251,8 @@ export default function Admin() {
               <div className="space-y-2">
                 {users.map((u) => (
                   <div key={u.uid} className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
-                      <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+                      <div className="min-w-0 flex-1 basis-52">
                         {editing?.uid === u.uid ? (
                           <div className="flex items-center gap-1.5">
                             <input
@@ -300,21 +300,21 @@ export default function Admin() {
                         </span>
                         <span className="text-[10px] text-white/40">赢{u.wins}</span>
                       </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-1 items-center justify-end gap-1.5 basis-40">
                         <button
-                          className="min-h-[34px] rounded-lg border border-white/15 px-2.5 text-[11px] font-semibold text-white/70 hover:bg-white/10"
+                          className="min-h-[36px] rounded-lg border border-white/15 px-3 text-[11px] font-semibold text-white/70 hover:bg-white/10"
                           onClick={() => setEditing({ uid: u.uid, name: u.name })}
                         >
                           改名
                         </button>
                         <button
-                          className="min-h-[34px] rounded-lg border border-white/15 px-2.5 text-[11px] font-semibold text-amber-200 hover:bg-white/10"
+                          className="min-h-[36px] rounded-lg border border-white/15 px-3 text-[11px] font-semibold text-amber-200 hover:bg-white/10"
                           onClick={() => setPwEdit(pwEdit?.uid === u.uid ? null : { uid: u.uid, pw: '' })}
                         >
                           重置密码
                         </button>
                         <ConfirmButton
-                          className="min-h-[34px] rounded-lg border border-red-400/30 px-2.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/15"
+                          className="min-h-[36px] rounded-lg border border-red-400/30 px-3 text-[11px] font-semibold text-red-300 hover:bg-red-500/15"
                           confirmText="确认删除？"
                           onConfirm={() => remove(u.uid)}
                         >

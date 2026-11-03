@@ -183,7 +183,12 @@ export function setAdminToken(t: string): void {
 async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
-    headers: { 'x-admin-token': getAdminToken(), ...(init?.headers ?? {}) },
+    headers: {
+      'x-admin-token': getAdminToken(),
+      // JSON body 必须显式声明类型，否则浏览器默认 text/plain，express.json() 不解析会导致存入空值
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string } & T;
   if (!res.ok) throw new Error(data?.error || `请求失败(${res.status})`);
@@ -217,10 +222,30 @@ interface SavedSession {
   playerId: string;
   token: string;
   name: string;
+  savedAt?: number;
 }
 
 export function saveSession(code: string, s: SavedSession): void {
-  localStorage.setItem(`mj:${code}`, JSON.stringify(s));
+  localStorage.setItem(`mj:${code}`, JSON.stringify({ ...s, savedAt: Date.now() }));
+}
+
+/** 最近一场未清理的本地房间会话（首页「回到战局」用） */
+export function latestSavedRoom(): string | null {
+  let best: { code: string; at: number } | null = null;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      const m = key ? /^mj:([A-Z2-9]{4})$/.exec(key) : null;
+      if (!m) continue;
+      const s = loadSession(m[1]);
+      if (!s) continue;
+      const at = s.savedAt ?? 0;
+      if (!best || at > best.at) best = { code: m[1], at };
+    }
+  } catch {
+    /* localStorage 不可用时忽略 */
+  }
+  return best?.code ?? null;
 }
 
 export function loadSession(code: string): SavedSession | null {
@@ -236,6 +261,31 @@ export function loadSession(code: string): SavedSession | null {
 
 export function clearSession(code: string): void {
   localStorage.removeItem(`mj:${code}`);
+}
+
+// ---------- 离开标记：主动离开/被踢后，刷新房间链接不再自动加入 ----------
+export function markRoomLeft(code: string): void {
+  try {
+    localStorage.setItem(`mj:left:${code}`, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function wasRoomLeft(code: string): boolean {
+  try {
+    return !!localStorage.getItem(`mj:left:${code}`);
+  } catch {
+    return false;
+  }
+}
+
+export function clearLeftMark(code: string): void {
+  try {
+    localStorage.removeItem(`mj:left:${code}`);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function lastName(): string {

@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { api } from '../socket';
+import { api, getAdminToken } from '../socket';
 import { useApp } from '../App';
 
 /** 页脚：内容在管理后台「页脚设置」中定义 */
 export function Footer() {
   const { go } = useApp();
   const [cfg, setCfg] = useState<{ github: string; text: string } | null>(null);
+  // 管理入口不对普通用户暴露：仅本机已保存管理口令（登录过后台）时显示
+  const [showAdmin, setShowAdmin] = useState(false);
   useEffect(() => {
     api.settings().then(setCfg).catch(() => {});
+    setShowAdmin(!!getAdminToken());
   }, []);
   const hasContent = !!cfg && (!!cfg.github || !!cfg.text);
   if (!cfg) return null;
@@ -28,9 +31,11 @@ export function Footer() {
           </a>
         )}
         {cfg.text && <span className="text-white/45">{cfg.text}</span>}
-        <button className="font-semibold text-white/40 hover:text-white/70" onClick={() => go({ name: 'admin' })}>
-          ⚙️ 管理后台
-        </button>
+        {showAdmin && (
+          <button className="font-semibold text-white/40 hover:text-white/70" onClick={() => go({ name: 'admin' })}>
+            ⚙️ 管理后台
+          </button>
+        )}
       </div>
       {hasContent && <div className="mx-auto mt-2 h-px w-24 bg-white/10" />}
       <p className="mt-2 text-[11px] text-white/25">雀记 · 麻将记分与整蛊条件卡</p>

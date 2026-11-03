@@ -41,7 +41,7 @@ export function HistoryList() {
               <button
                 key={h.id}
                 onClick={() => go({ name: 'historyDetail', id: h.id })}
-                className="panel p-4 text-left transition hover:bg-white/[0.09]"
+                className="panel card-hover p-4 text-left hover:border-gold/30 hover:bg-white/[0.09]"
               >
                 <div className="flex items-center justify-between text-[11px] text-white/40">
                   <span>
@@ -52,8 +52,8 @@ export function HistoryList() {
                   )}
                 </div>
                 <div className="mt-2.5 flex items-baseline gap-2">
-                  <span className="text-lg font-black text-gold">🥇 {winner?.name}</span>
-                  <span className={`text-sm font-bold ${scoreColor(winner?.finalScore ?? 0)}`}>
+                  <span className="text-lg font-black text-gold-grad">🥇 {winner?.name}</span>
+                  <span className={`num text-sm font-bold ${scoreColor(winner?.finalScore ?? 0)}`}>
                     {winner && winner.finalScore > 0 ? '+' : ''}
                     {winner?.finalScore ?? 0}
                   </span>
@@ -118,11 +118,18 @@ export function HistoryDetail({ id }: { id: number }) {
           <h2 className="mb-3 text-sm font-bold text-white/85">🏁 最终排名</h2>
           <div className="space-y-1.5">
             {sorted.map((p, i) => (
-              <div key={p.name + i} className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+              <div
+                key={p.name + i}
+                className={`flex items-center gap-2.5 rounded-xl border px-3 py-2.5 ${
+                  i === 0
+                    ? 'border-gold/40 bg-gradient-to-r from-gold/[0.12] to-transparent'
+                    : 'border-white/10 bg-black/20'
+                }`}
+              >
                 <span className="w-7 text-center text-lg">{['🥇', '🥈', '🥉'][i] ?? i + 1}</span>
                 {p.seat && <SeatBadge seat={p.seat} />}
                 <b className="flex-1 truncate">{p.name}</b>
-                <span className={`text-lg font-black ${scoreColor(p.finalScore)}`}>
+                <span className={`num text-lg font-black ${scoreColor(p.finalScore)}`}>
                   {p.finalScore > 0 ? '+' : ''}
                   {p.finalScore}
                 </span>
@@ -160,10 +167,17 @@ export function HistoryDetail({ id }: { id: number }) {
                   <div className="space-y-1">
                     {(entriesByRound.get(rn) ?? []).map((e) => (
                       <div key={e.id} className="flex flex-wrap items-baseline gap-x-1.5 text-[13px]">
-                        <span className="font-semibold text-red-200">{e.payers.map((p) => p.name).join('、')}</span>
+                        <span className={`font-semibold text-red-200 ${e.undone ? 'line-through opacity-50' : ''}`}>
+                          {e.payers.map((p) => p.name).join('、')}
+                        </span>
                         <span className="text-white/40">→</span>
-                        <span className="font-semibold text-emerald-200">{e.toName}</span>
-                        <b className="text-white">{e.amountTotal}</b>
+                        <span className={`font-semibold text-emerald-200 ${e.undone ? 'line-through opacity-50' : ''}`}>
+                          {e.toName}
+                        </span>
+                        <b className={`text-white ${e.undone ? 'line-through opacity-50' : ''}`}>{e.amountTotal}</b>
+                        {e.undone && (
+                          <span className="rounded bg-white/15 px-1.5 text-[10px] font-bold text-white/60">已撤销</span>
+                        )}
                         {e.note && <span className="rounded bg-white/10 px-1.5 text-[10px] text-white/60">{e.note}</span>}
                       </div>
                     ))}

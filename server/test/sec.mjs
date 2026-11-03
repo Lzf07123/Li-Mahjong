@@ -116,12 +116,67 @@ async function main() {
   const add = await emit(s1, 'score:add', { fromIds: [ids[0]], toId: ids[1], amountTotal: 10, note: 'x' });
   assert(add.ok, '房主正常记账');
   const st2 = await entryP;
+  // 伪造付款方：即使请求里带上别人的 fromIds，付款方也强制为记账人本人
+  const fakeP = new Promise((res) => s1.once('state', res));
+  r = await emit(s2, 'score:add', { fromIds: [ids[0]], toId: ids[0], amountTotal: 7 });
+  assert(r.ok, '试图替他人付分 → 请求受理但付款方为本人');
+  const fakeSt = await fakeP;
+  const hostScore = fakeSt.players.find((p) => p.id === ids[0]).score;
+  const selfScore = fakeSt.players.find((p) => p.id === ids[1]).score;
+  assert(hostScore === -3 && selfScore === 3, '伪造 fromIds 被忽略：房主只收不付，本人扣自己的分');
+  // 撤销需双方确认：收款方可发起请求（分数不动），付款方确认后才回滚并留痕
   r = await emit(s2, 'score:undo', { entryId: st2.entries[0].id });
-  assert(!r.ok, '非记账人非房主撤销 → 拒绝');
+  assert(r.ok, '收款方发起撤销请求 → 受理');
+  r = await emit(s2, 'score:undo', { entryId: st2.entries[0].id });
+  assert(r.ok, '发起人再次点击 → 取消请求');
+  await emit(s2, 'score:undo', { entryId: st2.entries[0].id }); // 重新发起
+  // 广播与 ack 存在竞态，轮询等待撤销生效的状态
+  const undoSt = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('未等到撤销生效状态')), 6000);
+    const handler = (st) => {
+      const e = (st.entries ?? []).find((x) => x.id === st2.entries[0].id);
+      if (e?.undone) {
+        clearTimeout(timer);
+        s1.off('state', handler);
+        resolve(st);
+      }
+    };
+    s1.on('state', handler);
+    emit(s1, 'score:undo', { entryId: st2.entries[0].id })
+      .then((rr) => assert(rr.ok, '付款方确认 → 撤销执行'))
+      .catch((e) => { clearTimeout(timer); reject(e); });
+  });
+  const undoneEntry = undoSt.entries.find((x) => x.id === st2.entries[0].id);
+  assert(undoneEntry?.undone === true, '撤销留痕：记录标记已撤销');
+  const hs2 = undoSt.players.find((p) => p.id === ids[0]).score;
+  const ss2 = undoSt.players.find((p) => p.id === ids[1]).score;
+  assert(hs2 === 7 && ss2 === -7, '双方同意后分数回滚（+7/-7）');
   r = await emit(s2, 'game:redrawOne', { playerId: ids[0] });
   assert(!r.ok, '非房主重摸他人 → 拒绝');
   s1.disconnect();
   s2.disconnect();
+
+  // 3.5) 单点登录：同一时间同个账号只允许一处登录
+  const solo = await ensure('sec_solo', '单点甲');
+  const sSolo = await connect();
+  const cSolo = await emit(sSolo, 'room:create', { token: solo.token });
+  assert(cSolo.ok, '单点测试：建房成功');
+  // 先挂监听再重新登录：请离事件在登录请求处理期间就会发出
+  const closedSoloP = new Promise((res) => sSolo.once('roomClosed', res));
+  const soloAgain = await ensure('sec_solo', '单点甲'); // 同账号再次登录（新会话）
+  r = await api('/api/me', { headers: { authorization: `Bearer ${solo.token}` } });
+  assert(r.status === 401, '旧会话被新登录顶掉 → 401');
+  r = await api('/api/me', { headers: { authorization: `Bearer ${soloAgain.token}` } });
+  assert(r.status === 200, '最新会话可用');
+  const closedSolo = await Promise.race([
+    closedSoloP,
+    new Promise((res) => setTimeout(() => res(null), 6000)),
+  ]);
+  assert(closedSolo?.reason === 'sessionReplaced', '旧设备在房间内被请离（sessionReplaced）');
+  // 旧会话的 socket 也无法再加入房间
+  r = await emit(sSolo, 'room:join', { code: cSolo.code, token: solo.token });
+  assert(!r.ok, '旧会话加入房间 → 拒绝（请先登录）');
+  sSolo.disconnect();
 
   // 4) 设置注入：页脚 javascript: URL 被清洗
   await api('/api/admin/settings', {
