@@ -99,29 +99,38 @@ export default function Home() {
             </>
           ) : (
             <>
-              <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-gold/25 bg-gold/[0.06] px-3 py-2 text-xs">
-                <span>👋</span>
-                <b className="text-gold">{auth.user.name}</b>
-                {me && (
-                  <span className="text-white/50">
-                    {me.games} 场 · 生涯{' '}
-                    <b className={scoreColor(me.total)}>
-                      {me.total > 0 ? '+' : ''}
-                      {me.total}
-                    </b>
-                  </span>
-                )}
+              <div className="mb-4 flex items-center gap-3 rounded-xl border border-gold/25 bg-gradient-to-r from-gold/[0.09] to-transparent px-3.5 py-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold to-amber-600 text-lg font-black text-felt-950 shadow-lg shadow-gold/20">
+                  {auth.user.name.slice(0, 1)}
+                </span>
+                <div className="min-w-0 flex-1 leading-tight">
+                  <div className="flex items-center gap-1.5">
+                    <b className="truncate text-sm text-gold">{auth.user.name}</b>
+                    {me && me.games > 0 && (
+                      <span className="text-[11px] text-white/50">
+                        {me.games} 场 ·{' '}
+                        <b className={scoreColor(me.total)}>
+                          {me.total > 0 ? '+' : ''}
+                          {me.total}
+                        </b>
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-white/35">已登录 · 忘记密码请联系管理员</div>
+                </div>
                 <button
-                  className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/70 hover:bg-white/20"
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-sm transition hover:bg-white/20"
+                  title="账号设置"
                   onClick={() => setProfileOpen(true)}
                 >
-                  账号设置
+                  ⚙️
                 </button>
                 <button
-                  className="ml-auto rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/70 hover:bg-white/20"
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-sm transition hover:bg-red-500/30"
+                  title="退出登录"
                   onClick={logout}
                 >
-                  退出登录
+                  ⎋
                 </button>
               </div>
 

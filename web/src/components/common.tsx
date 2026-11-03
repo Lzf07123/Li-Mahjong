@@ -142,6 +142,16 @@ export function fmtTime(ts: number): string {
   });
 }
 
+/** 相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / MM-DD */
+export function fmtRel(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60e3) return '刚刚';
+  if (diff < 3600e3) return `${Math.floor(diff / 60e3)} 分钟前`;
+  if (diff < 86400e3) return `${Math.floor(diff / 3600e3)} 小时前`;
+  if (diff < 2 * 86400e3) return '昨天';
+  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+}
+
 export function scoreColor(n: number): string {
   return n > 0 ? 'text-emerald-300' : n < 0 ? 'text-red-300' : 'text-white/70';
 }

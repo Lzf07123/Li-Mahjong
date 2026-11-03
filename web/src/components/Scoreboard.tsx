@@ -80,7 +80,9 @@ function PlayerTile({
   return (
     <div
       className={`relative rounded-2xl border p-3 transition ${
-        p.id === myId ? 'border-gold/50 bg-gold/[0.07]' : 'border-white/10 bg-black/25'
+        p.id === myId
+          ? 'border-gold/50 bg-gradient-to-br from-gold/[0.12] to-transparent'
+          : 'border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02]'
       } ${p.connected ? '' : 'opacity-45'}`}
     >
       <div className="flex items-center gap-2">

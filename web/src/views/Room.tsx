@@ -227,43 +227,64 @@ function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
       <div className="panel mx-auto mt-4 w-full max-w-2xl p-4 sm:p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-bold text-white/85">
-            玩家 <span className="text-gold">{snap.players.length}</span> / 8
+            玩家 <span className="text-gold">{snap.players.length}</span> / 4
           </h2>
-          <span className="text-[11px] text-white/40">坐等开台…</span>
+          <span className="text-[11px] text-white/40">
+            {snap.players.length >= 2 ? '≥2 人即可开局' : '坐等开台…'}
+          </span>
         </div>
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          {snap.players.map((p) => (
-            <div
-              key={p.id}
-              className={`relative rounded-2xl border p-3 text-center ${
-                p.id === me.id ? 'border-gold/50 bg-gold/[0.07]' : 'border-white/10 bg-black/25'
-              } ${p.connected ? '' : 'opacity-45'}`}
-            >
-              {isHost && p.id !== me.id && (
-                <button
-                  className="absolute right-1.5 top-1.5 z-10 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-red-500/30"
-                  title="移出房间"
-                  onClick={() => emitAck('room:kick', { playerId: p.id }).catch((e) => toast((e as Error).message, 'error'))}
+          {(() => {
+            const sorted = [...snap.players].sort((a, b) => SEATS.indexOf(a.seat) - SEATS.indexOf(b.seat));
+            const freeSeats = SEATS.filter((s) => !snap.players.some((p) => p.seat === s));
+            return Array.from({ length: 4 }).map((_, i) => {
+            const p = sorted[i];
+            const seat = p ? p.seat : freeSeats[i - sorted.length];
+            if (!p) {
+              return (
+                <div
+                  key={`empty-${seat}`}
+                  className="flex min-h-[118px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-black/10 text-white/30"
                 >
-                  ✕
-                </button>
-              )}
-              <button
-                className={`mx-auto flex flex-col items-center ${p.id === me.id ? 'cursor-pointer' : 'cursor-default'}`}
-                onClick={() => p.id === me.id && setSeatOpen(true)}
-                title={p.id === me.id ? '点击选择方位' : undefined}
-              >
-                <div className="flex">
-                  <Avatar p={p} me={p.id === me.id} />
+                  <SeatBadge seat={seat} size="lg" />
+                  <span className="text-[11px] font-semibold">等待加入</span>
                 </div>
-                <div className="mt-2 max-w-[8em] truncate text-sm font-bold">{p.name}</div>
-                <div className="mt-0.5 text-[10px] text-white/40">{p.connected ? '在线' : '离线'}</div>
-                {p.id === me.id && (
-                  <span className="mt-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">换方位 ›</span>
+              );
+            }
+            return (
+              <div
+                key={p.id}
+                className={`relative rounded-2xl border p-3 text-center ${
+                  p.id === me.id ? 'border-gold/50 bg-gold/[0.07]' : 'border-white/10 bg-black/25'
+                } ${p.connected ? '' : 'opacity-45'}`}
+              >
+                {isHost && p.id !== me.id && (
+                  <button
+                    className="absolute right-1.5 top-1.5 z-10 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-red-500/30"
+                    title="移出房间"
+                    onClick={() => emitAck('room:kick', { playerId: p.id }).catch((e) => toast((e as Error).message, 'error'))}
+                  >
+                    ✕
+                  </button>
                 )}
-              </button>
-            </div>
-          ))}
+                <button
+                  className={`mx-auto flex flex-col items-center ${p.id === me.id ? 'cursor-pointer' : 'cursor-default'}`}
+                  onClick={() => p.id === me.id && setSeatOpen(true)}
+                  title={p.id === me.id ? '点击选择方位' : undefined}
+                >
+                  <div className="flex">
+                    <Avatar p={p} me={p.id === me.id} />
+                  </div>
+                  <div className="mt-2 max-w-[8em] truncate text-sm font-bold">{p.name}</div>
+                  <div className="mt-0.5 text-[10px] text-white/40">{p.connected ? '在线' : '离线'}</div>
+                  {p.id === me.id && (
+                    <span className="mt-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">换方位 ›</span>
+                  )}
+                </button>
+              </div>
+            );
+            });
+          })()}
         </div>
 
         <div className="mt-5 flex gap-2">

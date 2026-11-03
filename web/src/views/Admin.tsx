@@ -8,7 +8,7 @@ import {
   type AdminUserRow,
 } from '../socket';
 import { useApp } from '../App';
-import { ConfirmButton, fmtTime, scoreColor } from '../components/common';
+import { ConfirmButton, fmtRel, scoreColor } from '../components/common';
 import { Footer } from '../components/Footer';
 
 export default function Admin() {
@@ -38,6 +38,18 @@ export default function Admin() {
       .then(() => setAuthed(true))
       .catch(() => setAuthed(false));
   }, [load]);
+
+  // 搜索防抖自动刷新
+  useEffect(() => {
+    if (!authed) return;
+    const t = setTimeout(() => {
+      adminApi
+        .users(query.trim())
+        .then((u) => setUsers(u.items))
+        .catch(() => {});
+    }, 350);
+    return () => clearTimeout(t);
+  }, [query, authed]);
 
   const login = async () => {
     setAdminToken(tokenInput.trim());
@@ -155,14 +167,14 @@ export default function Admin() {
           {/* 数据大盘 */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
             {[
-              { label: '注册用户', value: ov.users, icon: '👥' },
-              { label: '完整战局', value: ov.gamesFinished, icon: '🏁' },
-              { label: '进行中战局', value: ov.gamesLive, icon: '🎲' },
-              { label: '存活房间', value: ov.liveRooms, icon: '🏠' },
-              { label: '记账笔数', value: ov.entries, icon: '💰' },
-              { label: '条件卡记录', value: ov.draws, icon: '🀫' },
+              { label: '注册用户', value: ov.users, icon: '👥', tint: 'from-sky-500/25 to-transparent' },
+              { label: '完整战局', value: ov.gamesFinished, icon: '🏁', tint: 'from-emerald-500/25 to-transparent' },
+              { label: '进行中战局', value: ov.gamesLive, icon: '🎲', tint: 'from-amber-500/25 to-transparent' },
+              { label: '存活房间', value: ov.liveRooms, icon: '🏠', tint: 'from-violet-500/25 to-transparent' },
+              { label: '记账笔数', value: ov.entries, icon: '💰', tint: 'from-rose-500/25 to-transparent' },
+              { label: '条件卡记录', value: ov.draws, icon: '🀫', tint: 'from-teal-500/25 to-transparent' },
             ].map((c) => (
-              <div key={c.label} className="panel p-3.5 text-center">
+              <div key={c.label} className={`panel bg-gradient-to-br p-3.5 text-center ${c.tint}`}>
                 <div className="text-lg">{c.icon}</div>
                 <div className="mt-1 text-2xl font-black text-gold">{c.value}</div>
                 <div className="mt-0.5 text-[11px] text-white/50">{c.label}</div>
@@ -277,7 +289,7 @@ export default function Admin() {
                           </>
                         )}
                         <div className="mt-0.5 text-[10px] text-white/40">
-                          最近活跃 {fmtTime(u.lastSeenAt)} · 注册 {fmtTime(u.createdAt)}
+                          最近活跃 {fmtRel(u.lastSeenAt)} · 注册于 {fmtRel(u.createdAt)}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 text-[12px]">
@@ -375,6 +387,14 @@ export default function Admin() {
             <button className="btn-jade mt-3 w-full sm:w-32" disabled={busy} onClick={saveFooter}>
               保存页脚
             </button>
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+              <p className="mb-1.5 text-[10px] font-bold tracking-widest text-white/35">预览</p>
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs">
+                {footer.github && <span className="font-semibold text-white/60">🐙 GitHub</span>}
+                {footer.text && <span className="text-white/45">{footer.text}</span>}
+                <span className="text-white/30">⚙️ 管理后台</span>
+              </div>
+            </div>
           </div>
         </div>
       )}

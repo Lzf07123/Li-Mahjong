@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { RoomManager } from './rooms.js';
 import * as dbi from './db.js';
 import { readFileSync } from 'node:fs';
@@ -13,19 +13,50 @@ const PORT = Number(process.env.PORT || 3000);
 const STATIC_DIR = process.env.STATIC_DIR || '';
 // 管理后台口令：生产部署务必通过环境变量覆盖
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
+if (!process.env.ADMIN_TOKEN) {
+  console.warn('[mahjong] ⚠️ 未设置 ADMIN_TOKEN，正在使用默认口令，生产环境请务必通过环境变量覆盖');
+}
 
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (req.header('x-admin-token') !== ADMIN_TOKEN) {
+  const given = String(req.header('x-admin-token') ?? '');
+  const a = Buffer.from(given);
+  const b = Buffer.from(ADMIN_TOKEN);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return res.status(401).json({ error: '管理口令错误' });
   }
   next();
 }
 
+// ---------- 轻量内存限流 ----------
+const buckets = new Map<string, { count: number; reset: number }>();
+function rateLimit(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const b = buckets.get(key);
+  if (!b || b.reset < now) {
+    buckets.set(key, { count: 1, reset: now + windowMs });
+    return true;
+  }
+  b.count += 1;
+  return b.count <= limit;
+}
+function clientIp(req: express.Request): string {
+  const fwd = req.header('x-forwarded-for');
+  return (fwd ? fwd.split(',')[0].trim() : '') || req.socket.remoteAddress || 'unknown';
+}
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '16kb' }));
+// 基础安全响应头
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 const httpServer = createServer(app);
+// 不开放跨域：浏览器仅允许同源访问（node 客户端不受 CORS 约束）
 const io = new Server(httpServer, {
-  cors: { origin: true, credentials: true },
+  cors: { origin: false },
   maxHttpBufferSize: 1e6,
 });
 
@@ -46,9 +77,11 @@ function issueCaptcha(): { id: string; text: string } {
   const id = randomUUID();
   const text = Array.from({ length: 4 }, () => CAPTCHA_CHARS[Math.floor(Math.random() * CAPTCHA_CHARS.length)]).join('');
   captchas.set(id, { text, expires: Date.now() + CAPTCHA_TTL });
-  if (captchas.size > 1000) {
-    const now = Date.now();
-    for (const [k, v] of captchas) if (v.expires < now) captchas.delete(k);
+  // 硬容量上限：防刷导致内存无限增长（超限时淘汰最早的）
+  while (captchas.size > 3000) {
+    const oldest = captchas.keys().next().value;
+    if (oldest === undefined) break;
+    captchas.delete(oldest);
   }
   return { id, text };
 }
@@ -93,7 +126,10 @@ function checkCaptcha(req: express.Request): string | null {
   return null;
 }
 
-app.get('/api/captcha', (_req, res) => {
+app.get('/api/captcha', (req, res) => {
+  if (!rateLimit(`cap:${clientIp(req)}`, 60, 5 * 60e3)) {
+    return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+  }
   const { id, text } = issueCaptcha();
   res.json({ id, svg: renderCaptchaSvg(text) });
 });
@@ -108,6 +144,9 @@ const checkPassword = (pw: string): string | null => {
 };
 
 app.post('/api/auth/register', (req, res) => {
+  if (!rateLimit(`reg:${clientIp(req)}`, 10, 10 * 60e3)) {
+    return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
+  }
   const captchaErr = checkCaptcha(req);
   if (captchaErr) return res.status(400).json({ error: captchaErr });
   const loginName = String(req.body?.loginName ?? '').trim();
@@ -126,6 +165,9 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 app.post('/api/auth/login', (req, res) => {
+  if (!rateLimit(`login:${clientIp(req)}`, 15, 5 * 60e3)) {
+    return res.status(429).json({ error: '尝试过于频繁，请 5 分钟后再试' });
+  }
   const captchaErr = checkCaptcha(req);
   if (captchaErr) return res.status(400).json({ error: captchaErr });
   const loginName = String(req.body?.loginName ?? '').trim();

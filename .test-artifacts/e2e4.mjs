@@ -102,7 +102,7 @@ async function main() {
   await host.evaluateOnNewDocument(injectAuth(a.user, a.token));
   await host.goto(BASE, { waitUntil: 'domcontentloaded' });
   await sleep(800);
-  const loggedIn = await host.evaluate(() => document.body.innerText.includes('退出登录'));
+  const loggedIn = await host.evaluate(() => !!document.querySelector('button[title="退出登录"]'));
   console.log(`  ${loggedIn ? '✓' : '✗'} 注入会话后为登录态`);
   allOk &= loggedIn;
   const footerOk = await host.evaluate(() => {
@@ -115,7 +115,7 @@ async function main() {
   allOk &= (await scanOverflow(host, 'home-390'));
 
   // 账号设置面板
-  await clickBtn(host, '账号设置');
+  await host.evaluate(() => document.querySelector('button[title="账号设置"]')?.click());
   await sleep(600);
   const profOk = await host.evaluate(() => document.body.innerText.includes('登录名') && document.body.innerText.includes('修改密码'));
   console.log(`  ${profOk ? '✓' : '✗'} 账号设置面板（昵称/改密）`);

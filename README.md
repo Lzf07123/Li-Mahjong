@@ -56,8 +56,11 @@ docker compose -f docker-compose.dev.yml run --rm web npm i <pkg> --registry=htt
 ## 测试（全部容器内）
 
 ```bash
-# 冒烟测试：4 个模拟客户端完整打一场（37 项断言）
+# 冒烟测试：4 个模拟客户端完整打一场（64 项断言）
 docker compose -f docker-compose.dev.yml run --rm server node test/smoke.mjs
+
+# 安全测试：未授权/越权/输入校验/限流/响应头（28 项；会触发登录限流，跑完重启 server）
+docker compose -f docker-compose.dev.yml run --rm server node test/sec.mjs
 
 # 持久化验证：开局记账 → 重启容器 → 会话恢复 + 历史完整
 docker exec mahjong-score-server-1 node /app/test/persist.mjs setup

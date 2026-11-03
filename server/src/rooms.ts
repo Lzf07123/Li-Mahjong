@@ -40,6 +40,19 @@ export class RoomManager {
   private builtin: CardDef[];
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private sweepTimer: ReturnType<typeof setInterval>;
+  /** socket 级操作节流：key -> 时间戳数组 */
+  private throttleMap = new Map<string, number[]>();
+
+  /** 简单滑动窗口节流；超频返回 false */
+  private throttled(socket: Socket, key: string, limit: number, windowMs: number): boolean {
+    const now = Date.now();
+    const k = `${socket.id}:${key}`;
+    const arr = (this.throttleMap.get(k) ?? []).filter((t) => now - t < windowMs);
+    arr.push(now);
+    this.throttleMap.set(k, arr);
+    if (this.throttleMap.size > 5000) this.throttleMap.clear();
+    return arr.length > limit;
+  }
 
   constructor(io: IOServer) {
     this.io = io;
@@ -213,6 +226,7 @@ export class RoomManager {
   // ---------- 连接处理 ----------
   register(socket: Socket): void {
     socket.on('room:create', (payload: { token?: string }, ack?: Ack) => {
+      if (this.throttled(socket, 'create', 3, 60e3)) return ack?.({ ok: false, error: '操作太快啦，歇一下' });
       const user = dbi.userBySession(String(payload?.token ?? '').trim());
       if (!user) return ack?.({ ok: false, error: '请先登录' });
       const code = this.genCode();
@@ -431,6 +445,7 @@ export class RoomManager {
         if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
         if (room.status !== 'playing') return ack?.({ ok: false, error: '战局尚未开始' });
         if (!room.features.score) return ack?.({ ok: false, error: '本局未启用记分' });
+        if (this.throttled(socket, 'score', 20, 10e3)) return ack?.({ ok: false, error: '操作太快啦' });
         const fromIds = Array.from(new Set((payload.fromIds ?? []).map(String)));
         const toId = String(payload.toId ?? '');
         const amountTotal = Math.floor(Number(payload.amountTotal));
@@ -439,6 +454,7 @@ export class RoomManager {
         if (fromIds.includes(toId)) return ack?.({ ok: false, error: '付款方与收款方不能相同' });
         if (!Number.isFinite(amountTotal) || amountTotal <= 0)
           return ack?.({ ok: false, error: '金额需为正整数' });
+        if (amountTotal > 1_000_000) return ack?.({ ok: false, error: '单笔分数上限 1,000,000' });
         const to = room.players.find((p) => p.id === toId);
         const froms = fromIds.map((id) => room.players.find((p) => p.id === id));
         if (!to || froms.some((f) => !f)) return ack?.({ ok: false, error: '玩家不存在' });

@@ -1,7 +1,7 @@
 import type { Snapshot } from '../types';
 import { emitAck } from '../socket';
 import { useApp } from '../App';
-import { fmtTime } from './common';
+import { ConfirmButton, fmtTime } from './common';
 
 export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | null; isHost: boolean }) {
   const { toast } = useApp();
@@ -80,12 +80,13 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
                       </div>
                     </div>
                     {canUndo && (
-                      <button
-                        onClick={() => undo(e.id)}
+                      <ConfirmButton
                         className="shrink-0 rounded-lg border border-white/15 px-2.5 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10"
+                        confirmText="确认撤销？"
+                        onConfirm={() => undo(e.id)}
                       >
                         撤销
-                      </button>
+                      </ConfirmButton>
                     )}
                   </div>
                 );
