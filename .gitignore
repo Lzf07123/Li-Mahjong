@@ -3,8 +3,9 @@ node_modules/
 dist/
 web/dist/
 
-# 本地数据
+# 本地数据与密钥
 .data/
+.env
 *.db
 *.db-journal
 *.db-wal
