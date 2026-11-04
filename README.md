@@ -109,6 +109,8 @@ docker compose up -d --build
 ```
 
 - 默认监听 `3000` 端口（可用 `docker-compose.yml` 里的 ports 映射修改）
+- **限流的客户端 IP 识别**：直连部署保持默认；配置 Nginx 反代后需在 `docker-compose.yml` 的 mahjong 服务下加
+  `environment: [TRUST_PROXY=1]`，否则所有请求都会被视为代理 IP（同一限流桶）；切勿在无反代时开启（可被伪造请求头绕过限流）
 - **管理后台** `http://你的域名/admin`，口令由环境变量 `ADMIN_TOKEN` 控制（默认 `admin123`，生产务必修改：
   在 `docker-compose.yml` 的 mahjong 服务下加 `environment: [ADMIN_TOKEN=你的口令]`）
 - 后台可维护：用户（改名/重置密码/删除）与页脚内容（GitHub 链接、自定义文字）

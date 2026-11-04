@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomUUID, randomBytes, scrypt as _scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
+import type { ScryptOptions } from 'node:crypto';
 import type {
   CardDef,
   Category,
@@ -121,17 +123,49 @@ try {
 }
 
 // ---------- 账号认证 ----------
-export function hashPassword(pw: string): string {
-  const salt = randomBytes(8).toString('hex');
-  return `${salt}:${scryptSync(pw, salt, 32).toString('hex')}`;
+// scrypt 参数显式声明并随哈希一起存储（格式 scrypt$N$r$p$salt$hash），后续升级参数可平滑迁移。
+// N=2^15, r=8, p=1：每次约 32MiB 内存、几十毫秒，交互式登录场景的稳妥取值（默认仅 N=2^14）。
+// 注意 Node 默认 maxmem 仅 32MB，会拒绝 N=2^15 的参数，必须显式放宽。
+const SCRYPT_N = 1 << 15;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_MAXMEM = 128 * 1024 * 1024;
+const scrypt = promisify(_scrypt) as (
+  pw: string,
+  salt: string,
+  keylen: number,
+  options: ScryptOptions,
+) => Promise<Buffer>;
+
+/** 异步哈希密码（不阻塞事件循环）；salt 16 字节 */
+export async function hashPassword(pw: string): Promise<string> {
+  const salt = randomBytes(16).toString('hex');
+  const hash = (
+    await scrypt(pw, salt, 32, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM })
+  ).toString('hex');
+  return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt}$${hash}`;
 }
 
-export function verifyPassword(pw: string, stored: string | null): boolean {
+/** 校验密码；兼容旧格式 salt:hash（scryptSync 默认参数的历史数据） */
+export async function verifyPassword(pw: string, stored: string | null): Promise<boolean> {
   if (!stored) return false;
-  const [salt, h] = stored.split(':');
-  if (!salt || !h) return false;
-  const calc = scryptSync(pw, salt, 32).toString('hex');
+  if (!stored.startsWith('scrypt$')) {
+    const [salt, h] = stored.split(':');
+    if (!salt || !h) return false;
+    const calc = scryptSync(pw, salt, 32).toString('hex');
+    return calc.length === h.length && timingSafeEqual(Buffer.from(calc), Buffer.from(h));
+  }
+  const [, n, r, p, salt, h] = stored.split('$');
+  if (!n || !r || !p || !salt || !h) return false;
+  const calc = (
+    await scrypt(pw, salt, 32, { N: Number(n), r: Number(r), p: Number(p), maxmem: SCRYPT_MAXMEM })
+  ).toString('hex');
   return calc.length === h.length && timingSafeEqual(Buffer.from(calc), Buffer.from(h));
+}
+
+/** 是否为旧格式哈希（登录成功后应无感升级为新格式） */
+export function needsRehash(stored: string | null): boolean {
+  return !!stored && !stored.startsWith('scrypt$');
 }
 
 export interface UserRow {
@@ -141,12 +175,12 @@ export interface UserRow {
 }
 
 /** username = 登录名（唯一、不可改）；name = 昵称（可自行修改） */
-export function createUserWithPass(loginName: string, name: string, password: string): UserRow | null {
+export async function createUserWithPass(loginName: string, name: string, password: string): Promise<UserRow | null> {
   try {
     const uid = randomUUID();
     db.prepare(
       'INSERT INTO users (uid, name, username, pass, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(uid, name, loginName, hashPassword(password), Date.now(), Date.now());
+    ).run(uid, name, loginName, await hashPassword(password), Date.now(), Date.now());
     return { uid, name, username: loginName };
   } catch {
     return null; // 登录名冲突
@@ -169,8 +203,8 @@ export function getUserByUid(uid: string): UserRow | undefined {
   return db.prepare('SELECT uid, name, username FROM users WHERE uid = ?').get(uid) as UserRow | undefined;
 }
 
-export function setPasswordByUid(uid: string, password: string): boolean {
-  const info = db.prepare('UPDATE users SET pass = ? WHERE uid = ?').run(hashPassword(password), uid);
+export async function setPasswordByUid(uid: string, password: string): Promise<boolean> {
+  const info = db.prepare('UPDATE users SET pass = ? WHERE uid = ?').run(await hashPassword(password), uid);
   return info.changes > 0;
 }
 

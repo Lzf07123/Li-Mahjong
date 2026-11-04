@@ -39,10 +39,24 @@ function rateLimit(key: string, limit: number, windowMs: number): boolean {
   b.count += 1;
   return b.count <= limit;
 }
+// 反向代理信任开关：默认关闭（直连部署忽略 X-Forwarded-For，防止伪造请求头绕过限流）。
+// 仅当部署在单层可信反代（如本机 nginx）后时设 TRUST_PROXY=1，此时取 XFF 最后一跳（由可信代理追加）作为客户端 IP。
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 function clientIp(req: express.Request): string {
-  const fwd = req.header('x-forwarded-for');
-  return (fwd ? fwd.split(',')[0].trim() : '') || req.socket.remoteAddress || 'unknown';
+  if (TRUST_PROXY) {
+    const fwd = req.header('x-forwarded-for');
+    if (fwd) {
+      const hops = fwd.split(',').map((s) => s.trim()).filter(Boolean);
+      if (hops.length) return hops[hops.length - 1];
+    }
+  }
+  return req.socket.remoteAddress || 'unknown';
 }
+// 过期限流桶定期清扫，防止 buckets 无界增长
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of buckets) if (b.reset < now) buckets.delete(k);
+}, 5 * 60e3).unref();
 /**
  * 限流入口（自动化测试豁免）：
  * 仅当显式开启 ALLOW_TEST_CAPTCHA=1（测试环境）且请求携带 x-test-ratelimit 头时跳过限流，
@@ -83,6 +97,13 @@ const requireUser = (req: express.Request, res: express.Response, next: express.
   res.locals.user = user;
   next();
 };
+
+/** 异步路由包装：Express 4 不捕获 async handler 的 rejection，统一转交错误中间件 */
+const ah =
+  (fn: (req: express.Request, res: express.Response) => Promise<unknown>) =>
+  (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    fn(req, res).catch(next);
+  };
 
 // ---------- 图形验证码 ----------
 const CAPTCHA_CHARS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -160,7 +181,7 @@ const checkPassword = (pw: string): string | null => {
   return null;
 };
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', ah(async (req, res) => {
   if (!limitOk(req, 'reg', 10, 10 * 60e3)) {
     return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
   }
@@ -175,13 +196,13 @@ app.post('/api/auth/register', (req, res) => {
     return res.status(400).json({ error: '昵称 2-12 位，可含中文、字母、数字、下划线' });
   const pwErr = checkPassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
-  const created = dbi.createUserWithPass(loginName, name, password);
+  const created = await dbi.createUserWithPass(loginName, name, password);
   if (!created) return res.status(409).json({ error: '登录名已被注册，换个试试' });
   const token = dbi.createSession(created.uid);
   res.json({ token, user: { uid: created.uid, name: created.name } });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', ah(async (req, res) => {
   if (!limitOk(req, 'login', 15, 5 * 60e3)) {
     return res.status(429).json({ error: '尝试过于频繁，请 5 分钟后再试' });
   }
@@ -190,12 +211,14 @@ app.post('/api/auth/login', (req, res) => {
   const loginName = String(req.body?.loginName ?? '').trim();
   const password = String(req.body?.password ?? '');
   const user = dbi.findUserByUsername(loginName);
-  if (!user || !dbi.verifyPassword(password, user.pass))
+  if (!user || !(await dbi.verifyPassword(password, user.pass)))
     return res.status(401).json({ error: '登录名或密码错误' });
+  // 旧格式密码哈希在登录成功后无感升级为新格式（更强参数 + 参数随哈希存储）
+  if (dbi.needsRehash(user.pass)) await dbi.setPasswordByUid(user.uid, password);
   const token = dbi.createSession(user.uid);
   rm.evictUid(user.uid); // 单点登录：立即请离旧设备
   res.json({ token, user: { uid: user.uid, name: user.name } });
-});
+}));
 
 app.post('/api/auth/logout', (req, res) => {
   dbi.deleteSession(bearer(req));
@@ -213,19 +236,19 @@ app.post('/api/auth/change-name', (req, res) => {
 });
 
 // 登录后自助修改密码（需验证旧密码）
-app.post('/api/auth/change-password', (req, res) => {
+app.post('/api/auth/change-password', ah(async (req, res) => {
   const user = dbi.userBySession(bearer(req));
   if (!user) return res.status(401).json({ error: '未登录' });
   const oldPassword = String(req.body?.oldPassword ?? '');
   const newPassword = String(req.body?.newPassword ?? '');
   const full = dbi.findUserByUsername(user.username ?? '');
-  if (!full || !dbi.verifyPassword(oldPassword, full.pass))
+  if (!full || !(await dbi.verifyPassword(oldPassword, full.pass)))
     return res.status(400).json({ error: '当前密码错误' });
   const pwErr = checkPassword(newPassword);
   if (pwErr) return res.status(400).json({ error: pwErr });
-  dbi.setPasswordByUid(user.uid, newPassword);
+  await dbi.setPasswordByUid(user.uid, newPassword);
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/me', (req, res) => {
   const user = dbi.userBySession(bearer(req));
@@ -247,14 +270,14 @@ app.put('/api/admin/settings', requireAdmin, (req, res) => {
   res.json({ ok: true, settings: dbi.allSettings() });
 });
 
-app.put('/api/admin/users/:uid/password', requireAdmin, (req, res) => {
+app.put('/api/admin/users/:uid/password', requireAdmin, ah(async (req, res) => {
   const password = String(req.body?.password ?? '');
   const pwErr = checkPassword(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
-  if (!dbi.setPasswordByUid(String(req.params.uid), password))
+  if (!(await dbi.setPasswordByUid(String(req.params.uid), password)))
     return res.status(404).json({ error: '用户不存在' });
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/library', (_req, res) => {
   const file = path.join(here, '..', 'data', 'builtin-conditions.json');
@@ -344,6 +367,21 @@ app.get('/api/stats/trend', requireUser, (req, res) => {
   if (!uid && !name) return res.status(400).json({ error: '缺少 uid 或 name 参数' });
   res.json({ items: dbi.playerTrend(uid, name) });
 });
+
+// 统一错误兜底：不向客户端泄漏堆栈，JSON 体解析/超限错误保留原状态码
+app.use(
+  (
+    err: { status?: number; statusCode?: number; type?: string; message?: string },
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (res.headersSent) return next(err);
+    console.error('[mahjong] 请求处理异常:', err);
+    const status = err?.type === 'entity.parse.failed' ? 400 : (err?.status ?? err?.statusCode ?? 500);
+    res.status(status).json({ error: status === 400 ? '请求体格式有误' : '服务器内部错误' });
+  },
+);
 
 // 房间存活查询（首页「回到战局」用；读内存实时态，房间码本身就是准入凭据，仅返回概要）
 app.get('/api/room/:code/alive', (req, res) => {

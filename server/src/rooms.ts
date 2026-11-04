@@ -47,10 +47,10 @@ export class RoomManager {
   /** socket 级操作节流：key -> 时间戳数组 */
   private throttleMap = new Map<string, number[]>();
 
-  /** 简单滑动窗口节流；超频返回 false */
-  private throttled(socket: Socket, key: string, limit: number, windowMs: number): boolean {
+  /** 简单滑动窗口节流；超频返回 false。传 uid 时按账号计键（重连换 socket.id 不绕过），否则按 socket */
+  private throttled(socket: Socket, key: string, limit: number, windowMs: number, uid?: string | null): boolean {
     const now = Date.now();
-    const k = `${socket.id}:${key}`;
+    const k = `${uid ?? socket.id}:${key}`;
     const arr = (this.throttleMap.get(k) ?? []).filter((t) => now - t < windowMs);
     arr.push(now);
     this.throttleMap.set(k, arr);
@@ -106,6 +106,13 @@ export class RoomManager {
   private sweep(): void {
     for (const room of this.rooms.values()) {
       if (Date.now() - room.lastActivity > ROOM_TTL_MS) this.expire(room);
+    }
+    // 清理过期节流窗口，防止 throttleMap 无界增长（最大窗口 60s，取 10 分钟余量）
+    const now = Date.now();
+    for (const [k, arr] of this.throttleMap) {
+      const alive = arr.filter((t) => now - t < 10 * 60e3);
+      if (alive.length === 0) this.throttleMap.delete(k);
+      else this.throttleMap.set(k, alive);
     }
   }
 
@@ -341,10 +348,12 @@ export class RoomManager {
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
     on('room:create', (payload: { token?: string }, ack?: Ack) => {
-      if (this.throttled(socket, 'create', 3, 60e3)) return ack?.({ ok: false, error: '操作太快啦，歇一下' });
       const sessionToken = String(payload?.token ?? '').trim();
       const user = dbi.userBySession(sessionToken);
       if (!user) return ack?.({ ok: false, error: '请先登录' });
+      // 按账号限流：重连换 socket.id 不绕过
+      if (this.throttled(socket, 'create', 3, 60e3, user.uid))
+        return ack?.({ ok: false, error: '操作太快啦，歇一下' });
       const code = this.genCode();
       const host: Player = {
         id: randomUUID(),
@@ -391,6 +400,9 @@ export class RoomManager {
         const sessionToken = String(payload?.token ?? '').trim();
         const user = dbi.userBySession(sessionToken);
         if (!user) return ack?.({ ok: false, error: '请先登录' });
+        // 房间码可枚举，按账号限流防止高速扫码
+        if (this.throttled(socket, 'join', 20, 60e3, user.uid))
+          return ack?.({ ok: false, error: '操作太快啦，歇一下' });
         const room = this.roomByCode(code);
         if (!room) return ack?.({ ok: false, error: '房间不存在，可能已结束或已过期' });
         this.leaveCurrentRoom(socket, code);
@@ -805,8 +817,13 @@ export class RoomManager {
       (payload: { disabledCardIds?: string[]; disabledCategoryIds?: string[] }, ack?: Ack) => {
         const { room, player } = this.ctx(socket);
         if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
-        room.disabledCardIds = (payload.disabledCardIds ?? []).map(String);
-        room.disabledCategoryIds = (payload.disabledCategoryIds ?? []).map(String);
+        // 收敛入参：数组截断 + 去重 + 元素格式校验，防止超大数组进入每次广播与落盘 JSON
+        const normIds = (arr: unknown): string[] =>
+          Array.isArray(arr)
+            ? [...new Set(arr.map(String).filter((s) => /^[A-Za-z0-9_-]{1,64}$/.test(s)))].slice(0, 500)
+            : [];
+        room.disabledCardIds = normIds(payload.disabledCardIds);
+        room.disabledCategoryIds = normIds(payload.disabledCategoryIds);
         ack?.({ ok: true });
         this.broadcastRoom(room);
       },
