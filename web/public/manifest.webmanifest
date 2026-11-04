@@ -1,0 +1,32 @@
+{
+  "name": "雀记 · 麻将记分与整蛊条件卡",
+  "short_name": "雀记",
+  "description": "四人麻将牌桌的实时记分：一人建房，扫码加入，每局自动发整蛊条件卡",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06231a",
+  "theme_color": "#0b3d2e",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

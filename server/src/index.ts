@@ -43,6 +43,15 @@ function clientIp(req: express.Request): string {
   const fwd = req.header('x-forwarded-for');
   return (fwd ? fwd.split(',')[0].trim() : '') || req.socket.remoteAddress || 'unknown';
 }
+/**
+ * 限流入口（自动化测试豁免）：
+ * 仅当显式开启 ALLOW_TEST_CAPTCHA=1（测试环境）且请求携带 x-test-ratelimit 头时跳过限流，
+ * 使冒烟/安全测试可以连续运行互不污染；生产环境未开启该变量时头信息无效。
+ */
+function limitOk(req: express.Request, key: string, limit: number, windowMs: number): boolean {
+  if (ALLOW_TEST_CAPTCHA && req.header('x-test-ratelimit') === '1') return true;
+  return rateLimit(`${key}:${clientIp(req)}`, limit, windowMs);
+}
 
 const app = express();
 app.use(express.json({ limit: '16kb' }));
@@ -66,6 +75,14 @@ app.get('/api/health', (_req, res) => {
 
 const bearer = (req: express.Request): string =>
   String(req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+
+/** 登录态中间件：战绩/统计仅登录用户可见（含记账备注等隐私内容） */
+const requireUser = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const user = dbi.userBySession(bearer(req));
+  if (!user) return res.status(401).json({ error: '请先登录后再查看战绩' });
+  res.locals.user = user;
+  next();
+};
 
 // ---------- 图形验证码 ----------
 const CAPTCHA_CHARS = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -127,7 +144,7 @@ function checkCaptcha(req: express.Request): string | null {
 }
 
 app.get('/api/captcha', (req, res) => {
-  if (!rateLimit(`cap:${clientIp(req)}`, 60, 5 * 60e3)) {
+  if (!limitOk(req, 'cap', 60, 5 * 60e3)) {
     return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
   }
   const { id, text } = issueCaptcha();
@@ -144,7 +161,7 @@ const checkPassword = (pw: string): string | null => {
 };
 
 app.post('/api/auth/register', (req, res) => {
-  if (!rateLimit(`reg:${clientIp(req)}`, 10, 10 * 60e3)) {
+  if (!limitOk(req, 'reg', 10, 10 * 60e3)) {
     return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
   }
   const captchaErr = checkCaptcha(req);
@@ -165,7 +182,7 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 app.post('/api/auth/login', (req, res) => {
-  if (!rateLimit(`login:${clientIp(req)}`, 15, 5 * 60e3)) {
+  if (!limitOk(req, 'login', 15, 5 * 60e3)) {
     return res.status(429).json({ error: '尝试过于频繁，请 5 分钟后再试' });
   }
   const captchaErr = checkCaptcha(req);
@@ -269,19 +286,63 @@ app.delete('/api/admin/users/:uid', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/history', (_req, res) => {
+app.get('/api/history', requireUser, (_req, res) => {
   res.json({ items: dbi.historyList(100) });
 });
 
-app.get('/api/history/:id', (req, res) => {
+app.get('/api/history/:id', requireUser, (req, res) => {
   const id = Number(req.params.id);
   const detail = Number.isInteger(id) ? dbi.historyDetail(id) : null;
   if (!detail) return res.status(404).json({ error: '战局不存在' });
   res.json(detail);
 });
 
-app.get('/api/stats', (_req, res) => {
+// ---------- CSV 导出 ----------
+const csvCell = (v: string | number | null | undefined): string => {
+  const s = String(v ?? '');
+  // 含逗号/引号/换行时加引号包裹，引号转义为两个引号；前导 = + - @ 防公式注入
+  if (/^[=+\-@\r]/.test(s) || /[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+};
+const fmtCsvTime = (ts: number | null | undefined): string =>
+  ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '';
+
+app.get('/api/history/:id/csv', requireUser, (req, res) => {
+  const id = Number(req.params.id);
+  const detail = Number.isInteger(id) ? dbi.historyDetail(id) : null;
+  if (!detail) return res.status(404).json({ error: '战局不存在' });
+  const rows: (string | number | null)[][] = [
+    ['局号', '记账时间', '付款方', '收款方', '分数', '备注', '状态'],
+  ];
+  for (const e of detail.entries) {
+    rows.push([
+      e.roundNo,
+      fmtCsvTime(e.createdAt),
+      e.payers.map((p) => p.name).join('、'),
+      e.toName,
+      e.amountTotal,
+      e.note ?? '',
+      e.undone ? '已撤销' : '有效',
+    ]);
+  }
+  const csv =
+    '\uFEFF' + // BOM：Excel 直接打开不乱码
+    rows.map((r) => r.map(csvCell).join(',')).join('\r\n');
+  res.setHeader('content-type', 'text/csv; charset=utf-8');
+  res.setHeader('content-disposition', `attachment; filename="game-${detail.id}.csv"`);
+  res.send(csv);
+});
+
+app.get('/api/stats', requireUser, (_req, res) => {
   res.json({ items: dbi.stats() });
+});
+
+// 个人盈亏趋势（登录后可查任意玩家，数据与公开口径一致：按局净分）
+app.get('/api/stats/trend', requireUser, (req, res) => {
+  const uid = String(req.query.uid ?? '').trim() || null;
+  const name = String(req.query.name ?? '').trim().slice(0, 12);
+  if (!uid && !name) return res.status(400).json({ error: '缺少 uid 或 name 参数' });
+  res.json({ items: dbi.playerTrend(uid, name) });
 });
 
 // 房间存活查询（首页「回到战局」用；读内存实时态，房间码本身就是准入凭据，仅返回概要）
@@ -306,3 +367,8 @@ if (STATIC_DIR) {
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`[mahjong] server listening on :${PORT} (DATA_DIR=${process.env.DATA_DIR ?? '.data'})`);
 });
+
+// 过期会话定期清理：启动时先清一次，此后每小时一轮（unref 不阻止进程退出）
+dbi.purgeExpiredSessions();
+const sessionPurgeTimer = setInterval(() => dbi.purgeExpiredSessions(), 60 * 60 * 1000);
+sessionPurgeTimer.unref();

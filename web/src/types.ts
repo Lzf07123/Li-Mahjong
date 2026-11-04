@@ -48,6 +48,8 @@ export interface Snapshot {
   features: RoomFeatures;
   hostId: string;
   players: PlayerView[];
+  /** 观战者名单（只读） */
+  spectators: { id: string; name: string; connected: boolean }[];
   entries: ScoreEntryView[];
   entryCount: number;
   usedOnceCardIds: string[];
@@ -112,6 +114,13 @@ export interface StatsItem {
   games: number;
   total: number;
   wins: number;
+}
+
+/** 个人盈亏趋势的单场数据点（按时间升序） */
+export interface TrendPoint {
+  gameId: number;
+  startedAt: number;
+  score: number;
 }
 
 export type AckResp = { ok: boolean; error?: string } & Record<string, unknown>;

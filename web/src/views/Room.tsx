@@ -44,7 +44,7 @@ export default function Room({ code }: { code: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  const attemptJoin = useCallback(async () => {
+  const attemptJoin = useCallback(async (asSpectator = false) => {
     if (!loadAuth()) {
       setAuthed(false);
       return;
@@ -52,7 +52,7 @@ export default function Room({ code }: { code: string }) {
     setBusy(true);
     setGateError('');
     try {
-      const r = await emitRoomAck('room:join', { code });
+      const r = await emitRoomAck('room:join', asSpectator ? { code, asSpectator: true } : { code });
       saveSession(code, {
         playerId: r.playerId as string,
         token: r.token as string,
@@ -128,6 +128,14 @@ export default function Room({ code }: { code: string }) {
           ) : (
             <p className="py-8 text-center text-sm text-white/50">正在进入房间…</p>
           )}
+          {/* 已登录但在等待/出错时，随时可以旁观进入（不占座位、不参与记分） */}
+          {phase === 'gate' && authed && !busy && (
+            <div className="mt-4 border-t border-white/10 pt-3">
+              <button className="btn-ghost w-full text-sm" onClick={() => attemptJoin(true)}>
+                👀 以观战身份进入
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -141,8 +149,9 @@ export default function Room({ code }: { code: string }) {
     );
   }
 
+  const isSpectator = !!snap.spectators?.some((s) => s.id === myId);
   const me = snap.players.find((p) => p.id === myId);
-  if (!me) {
+  if (!me && !isSpectator) {
     // 已被移出或掉线后 session 失效
     clearSession(code);
     setPhase('gate');
@@ -150,18 +159,19 @@ export default function Room({ code }: { code: string }) {
   }
 
   return snap.status === 'lobby' ? (
-    <Lobby snap={snap} me={me} />
+    <Lobby snap={snap} me={me} spectator={isSpectator} />
   ) : (
-    <GameShell snap={snap} me={me} myId={myId} />
+    <GameShell snap={snap} me={me} myId={myId} spectator={isSpectator} />
   );
 }
 
 // ================= 大厅 =================
-function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
+function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spectator?: boolean }) {
   const { toast, setMyId, setSnap, go } = useApp();
   const [showQR, setShowQR] = useState(false);
   const [seatOpen, setSeatOpen] = useState(false);
-  const isHost = me.id === snap.hostId;
+  const isHost = !!me && me.id === snap.hostId;
+  const myId = me?.id ?? null;
   const joinUrl = `${location.origin}/?room=${snap.code}`;
   const { score: scoreOn, cards: cardsOn } = snap.features;
 
@@ -275,12 +285,12 @@ function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
               <div
                 key={p.id}
                 className={`relative rounded-2xl border p-3 text-center transition ${
-                  p.id === me.id
+                  p.id === myId
                     ? 'border-gold/60 bg-gradient-to-b from-gold/[0.13] to-transparent shadow-[0_0_28px_rgba(217,164,65,0.12)]'
                     : 'border-white/10 bg-gradient-to-b from-white/[0.07] to-transparent'
                 } ${p.connected ? 'card-hover' : 'opacity-45'}`}
               >
-                {isHost && p.id !== me.id && (
+                {isHost && p.id !== myId && (
                   <button
                     className="absolute right-1.5 top-1.5 z-10 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-red-500/30"
                     title="移出房间"
@@ -290,16 +300,16 @@ function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
                   </button>
                 )}
                 <button
-                  className={`mx-auto flex flex-col items-center ${p.id === me.id ? 'cursor-pointer' : 'cursor-default'}`}
-                  onClick={() => p.id === me.id && setSeatOpen(true)}
-                  title={p.id === me.id ? '点击选择方位' : undefined}
+                  className={`mx-auto flex flex-col items-center ${p.id === myId ? 'cursor-pointer' : 'cursor-default'}`}
+                  onClick={() => p.id === myId && setSeatOpen(true)}
+                  title={p.id === myId ? '点击选择方位' : undefined}
                 >
                   <div className="flex">
-                    <Avatar p={p} me={p.id === me.id} />
+                    <Avatar p={p} me={p.id === myId} />
                   </div>
                   <div className="mt-2 max-w-[8em] truncate text-sm font-bold">{p.name}</div>
                   <div className="mt-0.5 text-[10px] text-white/40">{p.connected ? '在线' : '离线'}</div>
-                  {p.id === me.id && (
+                  {p.id === myId && (
                     <span className="mt-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">换方位 ›</span>
                   )}
                 </button>
@@ -309,8 +319,39 @@ function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
           })()}
         </div>
 
+        {/* 观战席 */}
+        {snap.spectators.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+            <span className="text-xs font-bold text-white/55">👀 观战 {snap.spectators.length}</span>
+            {snap.spectators.map((s) => (
+              <span
+                key={s.id}
+                className={`flex items-center gap-1.5 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold ${
+                  s.connected ? 'text-white/75' : 'text-white/35'
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${s.connected ? 'bg-emerald-400' : 'bg-white/30'}`} />
+                {s.name}
+                {isHost && (
+                  <button
+                    className="ml-0.5 text-white/40 hover:text-red-300"
+                    title="移出观战"
+                    onClick={() => emitAck('room:kick', { spectatorId: s.id }).catch((e) => toast((e as Error).message, 'error'))}
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="mt-5 flex gap-2">
-          {isHost ? (
+          {spectator ? (
+            <div className="flex-1 rounded-xl border border-white/10 bg-black/25 py-3.5 text-center text-sm font-semibold text-white/50">
+              👀 观战中 · 等待房主开局…
+            </div>
+          ) : isHost ? (
             <button className="btn-primary flex-1 !min-h-[50px] text-base" disabled={snap.players.length < 2} onClick={start}>
               🎲 {snap.players.length < 2 ? '等待更多玩家加入' : '开局！发条件卡'}
             </button>
@@ -327,7 +368,7 @@ function Lobby({ snap, me }: { snap: Snapshot; me: PlayerView }) {
         </div>
       </div>
 
-      <SeatPicker open={seatOpen} onClose={() => setSeatOpen(false)} snap={snap} meId={me.id} />
+      {!spectator && <SeatPicker open={seatOpen} onClose={() => setSeatOpen(false)} snap={snap} meId={myId} />}
     </div>
   );
 }
@@ -404,9 +445,19 @@ function SeatPicker({ open, onClose, snap, meId }: { open: boolean; onClose: () 
 }
 
 // ================= 对局 =================
-function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: string | null }) {
+function GameShell({
+  snap,
+  me,
+  myId,
+  spectator,
+}: {
+  snap: Snapshot;
+  me?: PlayerView;
+  myId: string | null;
+  spectator?: boolean;
+}) {
   const { conn, toast } = useApp();
-  const isHost = me.id === snap.hostId;
+  const isHost = !!me && me.id === snap.hostId;
   const scoreOn = snap.features.score;
   const cardsOn = snap.features.cards;
   const [tab, setTab] = useState<Tab>(scoreOn ? 'score' : 'card');
@@ -415,9 +466,9 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
   const [overlay, setOverlay] = useState<{ text: string; category: string | null; roundNo: number } | null>(null);
   const seenRef = useRef('');
 
-  const myCardKey = `${snap.roundNo}:${me.cardText ?? ''}`;
+  const myCardKey = me ? `${snap.roundNo}:${me.cardText ?? ''}` : '';
   useEffect(() => {
-    if (cardsOn && me.cardText && seenRef.current !== myCardKey) {
+    if (!spectator && cardsOn && me?.cardText && seenRef.current !== myCardKey) {
       seenRef.current = myCardKey;
       setOverlay({ text: me.cardText, category: me.cardCategory, roundNo: snap.roundNo });
     }
@@ -464,8 +515,8 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
   };
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
-    ...(scoreOn ? [{ id: 'score' as Tab, label: '记分', icon: '💰' }] : []),
-    ...(cardsOn ? [{ id: 'card' as Tab, label: '我的卡', icon: '🀫' }] : []),
+    ...(scoreOn ? [{ id: 'score' as Tab, label: spectator ? '记分' : '记分', icon: '💰' }] : []),
+    ...(cardsOn ? [{ id: 'card' as Tab, label: spectator ? '条件卡' : '我的卡', icon: '🀫' }] : []),
     ...(scoreOn ? [{ id: 'ledger' as Tab, label: '流水', icon: '📜' }] : []),
     ...(isHost ? [{ id: 'manage' as Tab, label: '管理', icon: '⚙️' }] : []),
   ];
@@ -484,6 +535,9 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 rounded-lg bg-gold/15 px-2 py-1 text-sm font-black tracking-[0.15em] text-gold-grad sm:px-2.5 sm:tracking-[0.2em]">{snap.code}</span>
             <span className="shrink-0 whitespace-nowrap rounded-lg bg-felt-600/40 px-2 py-1 text-xs font-bold text-emerald-100">第 {snap.roundNo} 局</span>
+            {spectator && (
+              <span className="shrink-0 whitespace-nowrap rounded-lg bg-white/10 px-2 py-1 text-xs font-bold text-white/70">👀 观战</span>
+            )}
           </div>
           <div className="min-w-0 flex-1" />
           <ConnDot conn={conn} />
@@ -528,12 +582,16 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
           {tab === 'score' && scoreOn && (
             <div className="space-y-4">
               <Scoreboard snap={snap} myId={myId} showScore={scoreOn} />
-              <ScoreForm snap={snap} me={me} />
+              {me && <ScoreForm snap={snap} me={me} />}
             </div>
           )}
           {tab === 'card' && cardsOn && (
             <div className="space-y-4">
-              <MyCard me={me} isHost={isHost} />
+              {spectator ? (
+                <CardWall snap={snap} myId={myId} />
+              ) : (
+                me && <MyCard me={me} isHost={isHost} />
+              )}
               <PlayerCardsList snap={snap} myId={myId} />
             </div>
           )}
@@ -556,8 +614,19 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
               <>
                 <h3 className="px-1 text-xs font-bold tracking-widest text-white/45">条件卡墙</h3>
                 <CardWall snap={snap} myId={myId} />
-                <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">我的条件卡</h3>
-                <MyCard me={me} isHost={isHost} />
+                {spectator ? (
+                  <>
+                    <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">玩家条件卡</h3>
+                    <PlayerCardsList snap={snap} myId={myId} />
+                  </>
+                ) : (
+                  me && (
+                    <>
+                      <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">我的条件卡</h3>
+                      <MyCard me={me} isHost={isHost} />
+                    </>
+                  )
+                )}
               </>
             ) : (
               <CardsOffPlaceholder />
@@ -565,7 +634,7 @@ function GameShell({ snap, me, myId }: { snap: Snapshot; me: PlayerView; myId: s
           </div>
           {scoreOn && (
             <div className="space-y-4">
-              <ScoreForm snap={snap} me={me} />
+              {me && <ScoreForm snap={snap} me={me} />}
               <Ledger snap={snap} myId={myId} isHost={isHost} />
             </div>
           )}

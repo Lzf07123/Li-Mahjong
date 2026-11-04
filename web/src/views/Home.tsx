@@ -24,9 +24,21 @@ export default function Home() {
   const [resume, setResume] = useState<{ code: string; status: string; roundNo: number; playerCount: number } | null>(null);
 
   useEffect(() => {
-    api.stats().then((r) => setStats(r.items)).catch(() => setStats([]));
-    api.history().then((r) => setRecent(r.items.slice(0, 3))).catch(() => setRecent([]));
-  }, []);
+    // 战绩含记账备注，仅登录后可见
+    if (!auth) {
+      setStats(null);
+      setRecent(null);
+      return;
+    }
+    api
+      .stats()
+      .then((r) => setStats(r.items))
+      .catch(() => setStats([]));
+    api
+      .history()
+      .then((r) => setRecent(r.items.slice(0, 3)))
+      .catch(() => setRecent([]));
+  }, [auth]);
 
   useEffect(() => {
     const c = latestSavedRoom();
@@ -237,7 +249,9 @@ export default function Home() {
                 全部战绩 →
               </button>
             </div>
-            {stats === null || recent === null ? (
+            {!auth ? (
+              <p className="py-6 text-center text-xs text-white/40">登录后可查看战绩速览 🔐</p>
+            ) : stats === null || recent === null ? (
               <p className="py-6 text-center text-xs text-white/40">加载中…</p>
             ) : stats.length === 0 ? (
               <p className="py-6 text-center text-xs text-white/40">还没有打完的战局，来一局？</p>

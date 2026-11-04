@@ -86,7 +86,11 @@ export function getAuthToken(): string {
 
 async function authedJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { authorization: `Bearer ${getAuthToken()}` } });
-  if (res.status === 401) throw new Error('未登录');
+  if (res.status === 401) {
+    const err = new Error('请先登录后再查看战绩') as Error & { status?: number };
+    err.status = 401;
+    throw err;
+  }
   if (!res.ok) throw new Error(`请求失败(${res.status})`);
   return res.json() as Promise<T>;
 }
@@ -120,9 +124,21 @@ export interface Captcha {
 
 export const api = {
   library: () => getJson<import('./types').LibraryData>('/api/library'),
-  history: () => getJson<{ items: import('./types').HistoryItem[] }>('/api/history'),
-  historyDetail: (id: number) => getJson<import('./types').HistoryDetailData>(`/api/history/${id}`),
-  stats: () => getJson<{ items: import('./types').StatsItem[] }>('/api/stats'),
+  // 战绩/统计需要登录：未登录时抛出带 status=401 的错误
+  history: () => authedJson<{ items: import('./types').HistoryItem[] }>('/api/history'),
+  historyDetail: (id: number) => authedJson<import('./types').HistoryDetailData>(`/api/history/${id}`),
+  historyCsv: async (id: number): Promise<Blob> => {
+    const res = await fetch(`/api/history/${id}/csv`, { headers: { authorization: `Bearer ${getAuthToken()}` } });
+    if (!res.ok) throw new Error(`导出失败(${res.status})`);
+    return res.blob();
+  },
+  stats: () => authedJson<{ items: import('./types').StatsItem[] }>('/api/stats'),
+  trend: (opts: { uid?: string | null; name?: string }) => {
+    const q = new URLSearchParams();
+    if (opts.uid) q.set('uid', opts.uid);
+    else if (opts.name) q.set('name', opts.name);
+    return authedJson<{ items: import('./types').TrendPoint[] }>(`/api/stats/trend?${q.toString()}`);
+  },
   settings: () => getJson<{ github: string; text: string }>('/api/settings'),
   captcha: () => getJson<Captcha>('/api/captcha'),
   me: () => authedJson<MeInfo>('/api/me'),

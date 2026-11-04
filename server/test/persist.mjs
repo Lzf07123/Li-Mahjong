@@ -2,7 +2,7 @@
 // 运行：docker exec mahjong-score-server-1 node /app/test/persist.mjs setup|verify <code> <roomToken>
 import { io } from 'socket.io-client';
 
-const URL = process.env.TEST_URL || 'http://localhost:3000';
+const URL = process.env.TEST_URL || 'http://server:3000';
 const emit = (s, ev, payload) =>
   new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error('ack timeout: ' + ev)), 6000);
@@ -64,7 +64,8 @@ async function main() {
   }
   if (phase === 'verify') {
     const [code, roomToken] = process.argv.slice(3);
-    const before = await fetch(`${URL}/api/history`).then((r) => r.json());
+    // 先用房间 token 恢复会话并拿到快照：
+    // 注意顺序——登录会触发单点登录把旧会话玩家请离房间，必须在 rejoin 完成之后登录
     const s = io(URL, { transports: ['websocket'] });
     await new Promise((r) => s.on('connect', r));
     const snapP = new Promise((res, rej) => {
@@ -76,6 +77,17 @@ async function main() {
     const snap = await snapP;
     const okPlay = snap.status === 'playing' && snap.roundNo === 1;
     const host = snap.players.find((p) => p.id === r.playerId);
+    // rejoin 验证完毕后再登录拉历史快照（新会话会顶掉旧会话，但不影响已完成的恢复验证）
+    const login = await fetch(`${URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-captcha': '1', 'x-test-ratelimit': '1' },
+      body: JSON.stringify({ loginName: 'persist_a', password: 'persist1234' }),
+    });
+    const lj = await login.json();
+    if (!lj.token) throw new Error('verify 登录失败: ' + (lj.error || ''));
+    const before = await fetch(`${URL}/api/history`, {
+      headers: { authorization: `Bearer ${lj.token}` },
+    }).then((r) => r.json());
     console.log(JSON.stringify({
       rejoinOk: r.ok,
       playing: okPlay,

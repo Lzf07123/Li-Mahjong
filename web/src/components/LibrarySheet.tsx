@@ -19,7 +19,7 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
         .then(setData)
         .catch((e) => toast((e as Error).message, 'error'));
     }
-  }, [open]);
+  }, [open, toast]);
 
   const disabledCats = new Set(snap.disabledCategoryIds);
   const disabledCards = new Set(snap.disabledCardIds);

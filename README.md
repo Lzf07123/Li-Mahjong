@@ -2,15 +2,18 @@
 
 四人麻将牌桌的实时记分网页：一人建房，其他人扫码/输房间码加入，各用自己手机实时看总分；
 每局开始自动给每人发一张「整蛊条件卡」（内置 73 张题库，源自经典牌桌纸条），支持自定义题库；
-手动记账流水、撤销、历史战局复盘与累计盈亏统计。
+手动记账流水、撤销、历史战局复盘与累计盈亏统计。支持**观战**与**手机添加到主屏（PWA）**。
 
 **全流程 Docker 化**：开发、测试、生产都在容器内运行，宿主机只需安装 Docker。
+**CI**：每次 push / PR 自动跑 lint + 冒烟（90 项）+ 安全（45 项）+ 前端构建 + 持久化重启验证（见 `.github/workflows/ci.yml`）。
 
 ## 功能
 
 - 🏠 **房间**：创建/加入（4 位房间码 + 二维码扫码直达）、**标准四人局（东南西北）**、方位自选（被占置灰）、
-  踢人、解散、断线自动重连；玩家可随时**退出战局**（离场者分数照常归档结算）；
+  踢人、解散、断线自动重连；玩家可随时**退出战局**（离场者分数照常归档）；
   首页「**回到战局**」横幅一键回到进行中的对局；主动离开/被踢后刷新不会自动重进
+- 👀 **观战**：任何人可「以观战身份进入」房间（房间门禁页随时可进，满员也能进），
+  实时看总分、亮出的条件卡与流水，不占座位、不参与记分与结算；房主可移出观战者（单房上限 20 人）
 - 🔐 **账号体系**：注册/登录后开局；**登录名**（唯一、不可改）与**昵称**（显示名，可随时改）分离；
   密码 ≥8 位且含字母和数字（scrypt 加盐哈希，会话 30 天）；登录/注册带图形验证码；
   已登录可自助改昵称和密码（需验证当前密码），忘记密码联系管理员重置；
@@ -26,12 +29,14 @@
   撤销记录永久留痕（划线 + 已撤销徽章，历史复盘同步展示）
 - 🎛️ **玩法开关**：记分 / 条件卡可单独关闭（至少开一项），下一局随时可进、无前置门槛；
   房主顶栏常驻「下一局」（二次确认防误触）
-- 📊 **战绩**：结束战局自动归档（含战局中离场者）；历史列表、复盘详情（每轮条件卡 + 每笔流水含撤销状态）、
-  玩家累计盈亏/场次/胜场统计
+- 📊 **战绩**（仅登录用户可见，流水含隐私备注）：结束战局自动归档（含战局中离场者）；历史列表、
+  复盘详情（每轮条件卡 + 每笔流水含撤销状态）、玩家累计盈亏/场次/胜场统计、**个人盈亏走势图**（累计折线）；
+  战局支持 **📤 导出 CSV**（Excel 可直接打开）与 **🖼️ 一键生成分享图**（最终排名卡片 PNG）
 - 🛠️ **管理后台**：`/admin` 口令登录（入口仅对本机登录过后台的设备显示），数据大盘（用户/战局/记账/抽卡总量 +
   近 7 日曲线 + 盈亏榜）+ 用户管理（搜索/改名/重置密码/删除）+ 页脚设置（GitHub 链接与自定义文字，留空隐藏）；
   已适配移动端
-- 📱 **响应式**：手机（吸顶比分条 + 底部标签）/ 平板双栏 / 桌面三栏中控台（适合平板横屏放桌面中间）
+- 📱 **响应式 + PWA**：手机（吸顶比分条 + 底部标签）/ 平板双栏 / 桌面三栏中控台；
+  手机浏览器「添加到主屏幕」后以独立 App 打开（manifest + 图标，无需应用商店）
 
 ## 技术栈
 
@@ -64,19 +69,22 @@ docker compose -f docker-compose.dev.yml run --rm web npm i <pkg> --registry=htt
 ## 测试（全部容器内）
 
 ```bash
-# 冒烟测试：4 个模拟客户端完整打一场（75 项断言）
+# 冒烟测试：4 个模拟客户端完整打一场 + 观战模式（90 项断言）
 docker compose -f docker-compose.dev.yml run --rm server node test/smoke.mjs
 
-# 安全测试：未授权/越权/输入校验/单点登录/限流/响应头（39 项；
-# 注册与登录有频率限制，请勿与 smoke 连续运行，跑完重启 server 清限流）
+# 安全测试：未授权/越权/输入校验/单点登录/限流/响应头（45 项）
 docker compose -f docker-compose.dev.yml run --rm server node test/sec.mjs
+# 测试请求自动携带限流豁免头（仅 ALLOW_TEST_CAPTCHA=1 的环境生效），
+# smoke 与 sec 可以连续运行互不污染，无需重启容器
 
 # 持久化验证：开局记账 → 重启容器 → 会话恢复 + 历史完整
-docker exec mahjong-score-server-1 node /app/test/persist.mjs setup
-docker restart mahjong-score-server-1 && sleep 6
-# 用 setup 输出的 code/token：
-docker exec mahjong-score-server-1 node /app/test/persist.mjs verify <code> <token>
+OUT=$(docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs setup)
+docker compose -f docker-compose.dev.yml restart server && sleep 12
+# 用 setup 输出的 code/token（等健康检查通过后）：
+docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs verify <code> <token>
 ```
+
+以上三步（+ lint、前端构建）已由 GitHub Actions 在每次 push/PR 自动执行。
 
 E2E 可视化验证（无头 Chromium 双手机 + 平板/桌面三档，输出 15 张截图到 `.test-artifacts/`）：
 
@@ -102,8 +110,13 @@ docker compose up -d --build
 - 后台可维护：用户（改名/重置密码/删除）与页脚内容（GitHub 链接、自定义文字）
 - 环境变量 `ALLOW_TEST_CAPTCHA=1` 可跳过图形验证码校验（仅供自动化测试使用，生产切勿开启）
 - 国内服务器构建慢时可指定镜像源：`docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com`
-- 数据保存在 named volume `mahjong_data`（`/data/mahjong.db`），备份即备份该卷：
-  `docker run --rm -v mahjong-score_mahjong_data:/data -v $(pwd):/backup alpine cp /data/mahjong.db /backup/`
+- 数据保存在 named volume `mahjong_data`（`/data/mahjong.db`）。**定时备份**（在线快照，WAL 安全，保留最近 7 份）：
+
+  ```bash
+  sh scripts/backup-db.sh /var/backups/mahjong   # 手动跑一次
+  # crontab -e 加入（每天凌晨 4 点备份）：
+  # 0 4 * * * cd /path/to/Li-Mahjong && sh scripts/backup-db.sh /var/backups/mahjong >> /var/log/mahjong-backup.log 2>&1
+  ```
 
 ### 2. Nginx 反向代理（含 WebSocket）
 
@@ -142,12 +155,26 @@ docker compose up -d --build
 ├─ Dockerfile.dev          # 开发基础镜像（含 better-sqlite3 编译工具链）
 ├─ docker-compose.yml      # 生产：单服务 + 数据卷 + restart: unless-stopped
 ├─ docker-compose.dev.yml  # 开发：server(tsx watch) + web(vite 热更)
+├─ .github/workflows/ci.yml # CI：lint + 冒烟 + 安全 + 前端构建 + 持久化
+├─ scripts/backup-db.sh    # 数据库在线备份脚本（cron 友好，保留最近 7 份）
 ├─ server/
 │  ├─ src/{index,rooms,db,types}.ts
 │  ├─ data/builtin-conditions.json   # 内置题库 73 张
 │  └─ test/{smoke,sec,persist}.mjs
-├─ web/                    # React + Vite + Tailwind v4
+├─ web/                    # React + Vite + Tailwind v4（public/ 内含 PWA manifest 与图标）
 └─ .test-artifacts/        # E2E 截图与脚本
+```
+
+## 代码规范
+
+ESLint（server + web 各自 flat config）与 Prettier（`.prettierrc`）已配置：
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm server npm run lint
+docker compose -f docker-compose.dev.yml run --rm web npm run lint
+# 格式化（会改动文件，提交前按需执行）
+docker compose -f docker-compose.dev.yml run --rm server npm run format
+docker compose -f docker-compose.dev.yml run --rm web npm run format
 ```
 
 ## 开源协议

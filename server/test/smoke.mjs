@@ -1,10 +1,11 @@
-// 冒烟测试：注册/登录 → 4人完整一场 → 用户档案/管理后台
-// 运行：docker exec mahjong-score-server-1 node /app/test/smoke.mjs
+// 冒烟测试：注册/登录 → 4人完整一场 → 用户档案/管理后台 → 观战模式
+// 运行：docker compose -f docker-compose.dev.yml run --rm server node test/smoke.mjs
+// 说明：请求携带 x-test-ratelimit 头（需服务端 ALLOW_TEST_CAPTCHA=1），不触发限流，可与 sec.mjs 连续运行
 import { io } from 'socket.io-client';
 
 const URL = process.env.TEST_URL || 'http://server:3000';
 const ADMIN = { 'x-admin-token': process.env.ADMIN_TOKEN || 'admin123' };
-const BYPASS = { 'x-test-captcha': '1', 'content-type': 'application/json' };
+const BYPASS = { 'x-test-captcha': '1', 'x-test-ratelimit': '1', 'content-type': 'application/json' };
 let passed = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -267,17 +268,64 @@ async function main() {
   const ended = await endP;
   assert(ended.length === 3 && ended[0].standings.length === 4, '在场玩家收到结算（含离场者 4 人名单）');
 
-  console.log('7) 历史战绩 REST');
-  const hist = await fetch(`${URL}/api/history`).then((r) => r.json());
+  console.log('6.5) 观战模式');
+  const create2 = await emit(clients[0], 'room:create', { token: players[0].token });
+  assert(create2.ok, '观战测试：房主再建一房');
+  const code2 = create2.code;
+  const specSock = await connect();
+  track(specSock);
+  const specJoin = await emit(specSock, 'room:join', { code: code2, token: t5, asSpectator: true });
+  assert(specJoin.ok && specJoin.spectator === true, '观战者以旁观身份加入');
+  await waitPred(clients[0], (s) => s.spectators.length === 1);
+  assert(lastSnap.get(clients[0]).spectators[0].name === '路人甲', '房主可见观战名单');
+  const specSnap = await waitPred(specSock, (s) => s.spectators.length === 1);
+  assert(specSnap.players.length === 1, '观战快照包含玩家列表');
+  const specAdd = await emit(specSock, 'score:add', { toId: 'x', amountTotal: 10 });
+  assert(!specAdd.ok, '观战者不能记分');
+  const specStart = await emit(specSock, 'game:start');
+  assert(!specStart.ok, '观战者不能开局');
+  const specKick = await emit(specSock, 'room:kick', { spectatorId: 'zzz' });
+  assert(!specKick.ok, '观战者不能踢人');
+  // 同账号重复观战 → 回合同一观战者
+  const specSock2 = await connect();
+  track(specSock2);
+  const reSpec = await emit(specSock2, 'room:join', { code: code2, token: t5, asSpectator: true });
+  assert(reSpec.ok && reSpec.spectator === true && reSpec.rebound === true, '同账号观战回合（rebound）');
+  specSock2.disconnect();
+  await waitPred(clients[0], (s) => s.spectators.length === 1 && s.spectators[0].connected === false);
+  const specLeave = await emit(specSock, 'room:leave');
+  assert(specLeave.ok, '观战者退出');
+  await waitPred(clients[0], (s) => s.spectators.length === 0);
+  specSock.disconnect();
+
+  console.log('7) 历史战绩 REST（登录可见）');
+  const anonHist = await fetch(`${URL}/api/history`);
+  assert(anonHist.status === 401, '未登录访问历史列表被拒（401）');
+  const anonStats = await fetch(`${URL}/api/stats`);
+  assert(anonStats.status === 401, '未登录访问统计被拒（401）');
+  const authB = { headers: { authorization: `Bearer ${players[0].token}` } };
+  const hist = await fetch(`${URL}/api/history`, authB).then((r) => r.json());
   assert(hist.items.length >= 1, `历史列表 ${hist.items.length} 条`);
   const latest = hist.items[0];
   assert(latest.status === 'finished' && latest.players.length === 4, '最新战局已归档（finished, 4人）');
-  const detail = await fetch(`${URL}/api/history/${latest.id}`).then((r) => r.json());
+  const anonDetail = await fetch(`${URL}/api/history/${latest.id}`);
+  assert(anonDetail.status === 401, '未登录访问战局详情被拒');
+  const detail = await fetch(`${URL}/api/history/${latest.id}`, authB).then((r) => r.json());
   assert(detail.entries.length === 3, `历史流水共 3 笔（含撤销留痕，实际 ${detail.entries.length}）`);
   assert(detail.entries.some((e) => e.amountTotal === 88), '历史流水含 88 分记账');
   assert(detail.entries.some((e) => e.undone), '历史流水含已撤销留痕');
   assert(detail.players.some((p) => p.uid === players[0].uid), '归档玩家携带 uid');
   assert(detail.players.some((p) => p.seat === '北' && p.finalScore === 0), '战局中离场的玩家（北位）照常归档');
+  const anonCsv = await fetch(`${URL}/api/history/${latest.id}/csv`);
+  assert(anonCsv.status === 401, '未登录导出 CSV 被拒');
+  const csv = await fetch(`${URL}/api/history/${latest.id}/csv`, authB);
+  const csvText = await csv.text();
+  assert(
+    csv.status === 200 && (csv.headers.get('content-type') ?? '').includes('text/csv') && csvText.includes('88'),
+    '登录后 CSV 导出成功且含流水',
+  );
+  const trend = await fetch(`${URL}/api/stats/trend?uid=${players[0].uid}`, authB).then((r) => r.json());
+  assert(Array.isArray(trend.items) && trend.items.length >= 1, `个人盈亏趋势 ${trend.items.length} 场`);
   const aliveAfter = await fetch(`${URL}/api/room/${code}/alive`).then((r) => r.json());
   assert(aliveAfter.alive === false, '战局结束后房间存活查询 → false');
 

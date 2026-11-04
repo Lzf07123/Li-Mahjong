@@ -9,6 +9,7 @@ import type {
   HistoryListItem,
   PayerSplit,
   StatsItem,
+  TrendPoint,
 } from './types.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '.data');
@@ -201,6 +202,12 @@ export function userBySession(token: string): UserRow | undefined {
     return undefined;
   }
   return getUserByUid(s.uid);
+}
+
+/** 清理已过期的会话记录（定时调用，防止表无限增长） */
+export function purgeExpiredSessions(): number {
+  const info = db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+  return info.changes;
 }
 
 // ---------- 站点设置（页脚等） ----------
@@ -469,6 +476,23 @@ export function stats(): StatsItem[] {
     )
     .all() as { name: string; games: number; total: number; wins: number }[];
   return rows.map((r) => ({ name: r.name, games: r.games, total: r.total, wins: r.wins }));
+}
+
+/** 个人盈亏趋势：按账号 uid 聚合（uid 为空的旧数据按昵称匹配），时间升序 */
+export function playerTrend(uid: string | null, name: string, limit = 60): TrendPoint[] {
+  const where = uid ? 'gp.uid = ?' : "(IFNULL(gp.uid, '') = '' AND gp.name = ?)";
+  const key = uid ?? name;
+  const rows = db
+    .prepare(
+      `SELECT g.id AS gameId, g.started_at AS startedAt, gp.final_score AS score
+       FROM game_players gp
+       JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+       WHERE ${where}
+       ORDER BY g.started_at DESC
+       LIMIT ?`,
+    )
+    .all(key, limit) as { gameId: number; startedAt: number; score: number }[];
+  return rows.reverse();
 }
 
 // ---------- 管理后台 ----------

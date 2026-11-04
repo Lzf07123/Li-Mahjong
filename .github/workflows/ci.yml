@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启动开发容器（server + web）
+        run: docker compose -f docker-compose.dev.yml up -d --build
+
+      - name: 等待服务端就绪
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:3000/api/health > /dev/null; then
+              echo "server ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server 未在超时时间内就绪"
+          docker compose -f docker-compose.dev.yml logs server
+          exit 1
+
+      - name: Lint（ESLint）
+        run: |
+          docker compose -f docker-compose.dev.yml run --rm server npm run lint
+          docker compose -f docker-compose.dev.yml run --rm web npm run lint
+
+      - name: 冒烟测试（注册登录 → 四人完整一场 → 观战 → 历史与管理）
+        run: docker compose -f docker-compose.dev.yml run --rm server node test/smoke.mjs
+
+      - name: 安全测试（测试请求限流已豁免，可与冒烟连续运行）
+        run: docker compose -f docker-compose.dev.yml run --rm server node test/sec.mjs
+
+      - name: 前端类型检查与构建
+        run: docker compose -f docker-compose.dev.yml run --rm web npm run build
+
+      - name: 持久化验证（开局记账 → 重启容器 → 会话恢复 + 历史完整）
+        run: |
+          OUT=$(docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs setup)
+          echo "$OUT"
+          CODE=$(echo "$OUT" | jq -r .code)
+          RTOKEN=$(echo "$OUT" | jq -r .roomToken)
+          docker compose -f docker-compose.dev.yml restart server
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/api/health > /dev/null; then break; fi
+            sleep 2
+          done
+          docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs verify "$CODE" "$RTOKEN"

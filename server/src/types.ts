@@ -79,6 +79,17 @@ export interface LeftPlayer {
   uid: string | null;
 }
 
+/** 观战者：只读进入房间，不占座位、不参与记分与结算 */
+export interface Spectator {
+  id: string;
+  token: string;
+  uid: string | null;
+  sessionToken: string | null;
+  name: string;
+  connected: boolean;
+  since: number;
+}
+
 export interface Room {
   code: string;
   hostId: string;
@@ -93,6 +104,8 @@ export interface Room {
   players: Player[];
   /** 战局进行中离开的玩家（含最终分数，结算时并入 standings） */
   leftPlayers: LeftPlayer[];
+  /** 观战者（不参与结算，随房间存续） */
+  spectators: Spectator[];
   entries: ScoreEntry[];
   /** 本次战局已使用的“一晚限一次”卡 */
   usedOnceCardIds: string[];
@@ -122,6 +135,8 @@ export interface Snapshot {
     cardText: string | null;
     cardCategory: Category | null;
   }[];
+  /** 观战者概要（只读名单，无 token 等敏感字段） */
+  spectators: { id: string; name: string; connected: boolean }[];
   entries: ScoreEntry[];
   entryCount: number;
   usedOnceCardIds: string[];
@@ -164,4 +179,11 @@ export interface StatsItem {
   games: number;
   total: number;
   wins: number;
+}
+
+/** 个人盈亏趋势的单场数据点（按时间升序） */
+export interface TrendPoint {
+  gameId: number;
+  startedAt: number;
+  score: number;
 }

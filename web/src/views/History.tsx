@@ -1,17 +1,66 @@
 import { useEffect, useState } from 'react';
-import { api } from '../socket';
+import { api, loadAuth } from '../socket';
 import { useApp } from '../App';
 import { CategoryChip, SeatBadge, fmtTime, scoreColor } from '../components/common';
 import { Footer } from '../components/Footer';
-import type { HistoryDetailData, HistoryItem } from '../types';
+import { TrendChart } from '../components/TrendChart';
+import { downloadHistoryShareImage } from '../components/shareImage';
+import type { HistoryDetailData, HistoryItem, TrendPoint } from '../types';
+
+/** 战绩区未登录占位（战绩含记账备注，仅登录用户可见） */
+function LoginRequired() {
+  const { go } = useApp();
+  return (
+    <div className="panel mx-auto mt-10 w-full max-w-md p-10 text-center">
+      <div className="text-4xl opacity-30">🔐</div>
+      <p className="mt-3 text-sm font-semibold text-white/70">战绩仅对登录用户可见</p>
+      <p className="mt-1 text-xs text-white/40">流水里包含大家的记账备注，请先登录再查看</p>
+      <button className="btn-primary mt-4" onClick={() => go({ name: 'home' })}>
+        去登录
+      </button>
+    </div>
+  );
+}
+
+const isAuthErr = (e: unknown): boolean => (e as Error & { status?: number })?.status === 401;
 
 export function HistoryList() {
   const { go, back } = useApp();
   const [items, setItems] = useState<HistoryItem[] | null>(null);
+  const [trend, setTrend] = useState<TrendPoint[] | null>(null);
+  const [needLogin, setNeedLogin] = useState(() => !loadAuth());
 
   useEffect(() => {
-    api.history().then((r) => setItems(r.items)).catch(() => setItems([]));
-  }, []);
+    if (needLogin) return;
+    const me = loadAuth();
+    api
+      .history()
+      .then((r) => setItems(r.items))
+      .catch((e) => {
+        if (isAuthErr(e)) setNeedLogin(true);
+        else setItems([]);
+      });
+    if (me) {
+      api
+        .trend({ uid: me.user.uid })
+        .then((r) => setTrend(r.items))
+        .catch(() => setTrend(null));
+    }
+  }, [needLogin]);
+
+  if (needLogin) {
+    return (
+      <div className="flex flex-1 flex-col px-4 pb-10 pt-5">
+        <div className="mb-4 flex items-center gap-3">
+          <button className="btn-ghost !min-h-[38px] !px-3" onClick={back}>
+            ←
+          </button>
+          <h1 className="text-lg font-black">历史战绩</h1>
+        </div>
+        <LoginRequired />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-1 flex-col px-4 pb-10 pt-5">
@@ -21,6 +70,13 @@ export function HistoryList() {
         </button>
         <h1 className="text-lg font-black">历史战绩</h1>
       </div>
+
+      {trend && trend.length > 0 && (
+        <div className="panel mx-auto mb-4 w-full max-w-3xl p-4">
+          <h2 className="mb-2 text-sm font-bold text-white/85">📈 我的盈亏走势</h2>
+          <TrendChart points={trend} />
+        </div>
+      )}
 
       {items === null ? (
         <p className="py-16 text-center text-sm text-white/40">加载中…</p>
@@ -78,14 +134,65 @@ export function HistoryList() {
 export function HistoryDetail({ id }: { id: number }) {
   const { back, toast } = useApp();
   const [data, setData] = useState<HistoryDetailData | null>(null);
+  const [needLogin, setNeedLogin] = useState(() => !loadAuth());
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (needLogin) return;
     api
       .historyDetail(id)
       .then(setData)
-      .catch((e) => toast((e as Error).message, 'error'));
+      .catch((e) => {
+        if (isAuthErr(e)) {
+          setNeedLogin(true);
+          return;
+        }
+        toast((e as Error).message, 'error');
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, needLogin]);
+
+  const exportCsv = async () => {
+    setBusy(true);
+    try {
+      const blob = await api.historyCsv(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `雀记流水-${id}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast('📤 CSV 已导出', 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const share = () => {
+    if (!data) return;
+    try {
+      downloadHistoryShareImage(data);
+      toast('🖼️ 分享图已生成', 'success');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+
+  if (needLogin) {
+    return (
+      <div className="flex flex-1 flex-col px-4 pb-10 pt-5">
+        <div className="mb-4 flex items-center gap-3">
+          <button className="btn-ghost !min-h-[38px] !px-3" onClick={back}>
+            ←
+          </button>
+          <h1 className="text-lg font-black">战局复盘</h1>
+        </div>
+        <LoginRequired />
+      </div>
+    );
+  }
 
   if (!data) {
     return <p className="flex flex-1 items-center justify-center py-20 text-sm text-white/40">加载中…</p>;
@@ -107,8 +214,21 @@ export function HistoryDetail({ id }: { id: number }) {
           ←
         </button>
         <h1 className="text-lg font-black">战局复盘</h1>
-        <span className="text-xs text-white/40">
+        <span className="truncate text-xs text-white/40">
           {fmtTime(data.startedAt)} · 房间 {data.code}
+        </span>
+        <span className="ml-auto flex shrink-0 gap-1.5">
+          <button
+            className="btn-ghost !min-h-[34px] !px-2.5 text-xs"
+            disabled={busy}
+            onClick={exportCsv}
+            title="导出本局流水 CSV（Excel 可直接打开）"
+          >
+            📤 CSV
+          </button>
+          <button className="btn-ghost !min-h-[34px] !px-2.5 text-xs" onClick={share} title="生成最终排名分享图">
+            🖼️ 分享图
+          </button>
         </span>
       </div>
 

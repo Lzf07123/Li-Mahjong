@@ -98,7 +98,9 @@ export default function App() {
     const onDisconnect = () => setConn('disconnected');
     const onState = (s: Snapshot) => {
       setSnap((prev) => (prev && prev.code === s.code && prev.rev >= s.rev ? prev : s));
-      if (s.players.some((p) => p.id === myId) || !myId) setConn('connected');
+      const iAmIn =
+        s.players.some((p) => p.id === myId) || s.spectators?.some((x) => x.id === myId) || !myId;
+      if (iAmIn) setConn('connected');
     };
     const onGameEnded = (payload: { standings: { name: string; score: number }[] }) => {
       const winner = [...payload.standings].sort((a, b) => b.score - a.score)[0];

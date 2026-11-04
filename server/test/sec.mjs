@@ -1,11 +1,12 @@
 // 安全测试：未授权 / 越权 / 输入校验 / 滥用路径 / 响应头
-// 运行：docker exec mahjong-score-server-1 node /app/test/sec.mjs
-// 注意：包含登录限流触发测试，跑完建议重启 server 容器再跑 smoke
+// 运行：docker compose -f docker-compose.dev.yml run --rm server node test/sec.mjs
+// 常规请求携带 x-test-ratelimit 头（需服务端 ALLOW_TEST_CAPTCHA=1）跳过限流；
+// 仅最后的限流测试用 postRaw 不带该头真实触发 429，跑完无需重启容器即可运行 smoke
 import { io } from 'socket.io-client';
 
-const URL = process.env.TEST_URL || 'http://localhost:3000';
+const URL = process.env.TEST_URL || 'http://server:3000';
 const ADMIN = { 'x-admin-token': process.env.ADMIN_TOKEN || 'admin123' };
-const BYPASS = { 'content-type': 'application/json', 'x-test-captcha': '1' };
+const BYPASS = { 'content-type': 'application/json', 'x-test-captcha': '1', 'x-test-ratelimit': '1' };
 let passed = 0;
 
 function assert(cond, msg) {
@@ -19,10 +20,10 @@ async function api(path, opts = {}) {
   const data = await res.json().catch(() => ({}));
   return { status: res.status, headers: res.headers, data };
 }
-// 带 bypass（模拟测试环境跳过验证码）
+// 带 bypass（模拟测试环境跳过验证码与限流）
 const post = (path, body, headers = {}) =>
   api(path, { method: 'POST', headers: { ...BYPASS, ...headers }, body: JSON.stringify(body) });
-// 不带 bypass（模拟真实浏览器：验证码必须强制校验）
+// 不带 bypass（模拟真实浏览器：验证码必须强制校验、限流真实生效）
 const postRaw = (path, body) =>
   api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -52,6 +53,18 @@ async function main() {
   assert(r.status === 401, '错误口令访问管理 API → 401');
   r = await api('/api/admin/users/whatever', { method: 'DELETE', headers: ADMIN });
   assert(r.status === 404, '删除不存在用户 → 404（需口令）');
+  r = await api('/api/history');
+  assert(r.status === 401, '未登录访问历史战绩 → 401');
+  r = await api('/api/history/1');
+  assert(r.status === 401, '未登录访问战局详情 → 401');
+  r = await api('/api/history/1/csv');
+  assert(r.status === 401, '未登录导出 CSV → 401');
+  r = await api('/api/stats');
+  assert(r.status === 401, '未登录访问统计 → 401');
+  r = await api('/api/stats/trend?uid=x');
+  assert(r.status === 401, '未登录访问个人趋势 → 401');
+  r = await api('/api/history', { headers: { authorization: 'Bearer forged-token-123' } });
+  assert(r.status === 401, '伪造会话访问历史战绩 → 401');
 
   // 2) 验证码强制 + 输入校验
   r = await postRaw('/api/auth/register', { loginName: 'sec_test1', name: '安全测试', password: 'pass1234' });
@@ -202,10 +215,10 @@ async function main() {
   });
   assert(big.status === 413, '超大请求体 → 413');
 
-  // 7) 登录暴力破解限流（放最后：会锁住该 IP 5 分钟）
+  // 7) 登录暴力破解限流（放最后：postRaw 不带 x-test-ratelimit 头，真实触发限流）
   let got429 = false;
   for (let i = 0; i < 18; i++) {
-    const lr = await post('/api/auth/login', { loginName: 'sec_user', password: 'wrong-pass9' });
+    const lr = await postRaw('/api/auth/login', { loginName: 'sec_user', password: 'wrong-pass9' });
     if (lr.status === 429) {
       got429 = true;
       break;
@@ -214,7 +227,7 @@ async function main() {
   assert(got429, '连续登录失败触发限流 → 429');
 
   console.log(`\n✅ 安全测试全部通过: ${passed} 项`);
-  console.log('⚠️ 登录限流已触发，请重启 server 容器后再运行 smoke 测试');
+  console.log('ℹ️ 限流仅影响本容器 IP 的裸请求；带测试头的 smoke 可直接连续运行');
   process.exit(0);
 }
 
