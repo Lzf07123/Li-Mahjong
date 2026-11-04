@@ -150,11 +150,34 @@ export class RoomManager {
   private maybeDissolve(room: Room): boolean {
     if (room.players.length > 0) return false;
     if (room.gameId) dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
-    dbi.deleteLiveRoom(room.code);
-    this.rooms.delete(room.code);
+    this.dropRoom(room.code);
     this.io.in(room.code).emit('roomClosed', { reason: 'dissolved' });
     this.io.in(room.code).socketsLeave(room.code);
     return true;
+  }
+
+  /** 删除房间（内存 + live_rooms 行）并取消挂起的防抖落盘定时器；否则定时器触发会把已删除的房间写回（幽灵房间） */
+  private dropRoom(code: string): void {
+    const t = this.saveTimers.get(code);
+    if (t) clearTimeout(t);
+    this.saveTimers.delete(code);
+    this.rooms.delete(code);
+    dbi.deleteLiveRoom(code);
+  }
+
+  /** 进入新房间前先离开旧房间：否则 socket 残留在旧房间造成双份广播，旧房间玩家显示“一直在线” */
+  private leaveCurrentRoom(socket: Socket, newCode: string): void {
+    const prevCode: string | undefined = socket.data.code;
+    if (!prevCode || prevCode === newCode) return;
+    socket.leave(prevCode);
+    const prev = this.rooms.get(prevCode);
+    if (!prev) return;
+    const { player, spectator } = this.ctx(socket);
+    if (player) player.connected = false;
+    if (spectator) spectator.connected = false;
+    if (player || spectator) {
+      if (!this.maybeDissolve(prev)) this.broadcastRoom(prev);
+    }
   }
 
   /** 结算名单：在场玩家 + 战局中离场者 */
@@ -169,8 +192,7 @@ export class RoomManager {
     if (room.gameId) {
       dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
     }
-    dbi.deleteLiveRoom(room.code);
-    this.rooms.delete(room.code);
+    this.dropRoom(room.code);
     this.io.in(room.code).emit('roomClosed', { reason: 'expired' });
     this.io.in(room.code).socketsLeave(room.code);
   }
@@ -183,6 +205,7 @@ export class RoomManager {
       room.code,
       setTimeout(() => {
         this.saveTimers.delete(room.code);
+        if (!this.rooms.has(room.code)) return; // 房间已删除（结算/解散/过期），不得写回
         dbi.saveLiveRoom(room.code, room);
       }, 400),
     );
@@ -193,6 +216,11 @@ export class RoomManager {
     const room = this.rooms.get(code);
     if (!room) return null;
     return { status: room.status, roundNo: room.roundNo, playerCount: room.players.length };
+  }
+
+  /** 当前全部进行中房间（优雅关闭时同步落盘用） */
+  roomsSnapshot(): Room[] {
+    return [...this.rooms.values()];
   }
 
   private roomByCode(code: string): Room | undefined {
@@ -296,7 +324,23 @@ export class RoomManager {
 
   // ---------- 连接处理 ----------
   register(socket: Socket): void {
-    socket.on('room:create', (payload: { token?: string }, ack?: Ack) => {
+    // 统一异常兜底：better-sqlite3 为同步 API，磁盘异常抛错不允许击穿为 uncaughtException 崩掉进程。
+    // 处理器载荷类型各异，包装层只能放宽为 any（作用域内禁用规则）；运行时按 Ack 形态回执错误。
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const on = (ev: string, fn: (...args: any[]) => void): void => {
+      socket.on(ev, (...args: any[]) => {
+        try {
+          fn(...args);
+        } catch (err) {
+          console.error(`[mahjong] ${ev} 处理异常:`, err);
+          const ack = args[args.length - 1] as Ack | undefined;
+          if (typeof ack === 'function') ack({ ok: false, error: '服务器开小差了，请稍后再试' });
+        }
+      });
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    on('room:create', (payload: { token?: string }, ack?: Ack) => {
       if (this.throttled(socket, 'create', 3, 60e3)) return ack?.({ ok: false, error: '操作太快啦，歇一下' });
       const sessionToken = String(payload?.token ?? '').trim();
       const user = dbi.userBySession(sessionToken);
@@ -332,6 +376,7 @@ export class RoomManager {
         disabledCategoryIds: [],
       };
       this.rooms.set(code, room);
+      this.leaveCurrentRoom(socket, code);
       socket.data.playerId = host.id;
       socket.data.code = code;
       socket.join(code);
@@ -339,7 +384,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on(
+    on(
       'room:join',
       (payload: { code?: string; token?: string; asSpectator?: boolean }, ack?: Ack) => {
         const code = String(payload?.code ?? '').trim().toUpperCase();
@@ -348,6 +393,7 @@ export class RoomManager {
         if (!user) return ack?.({ ok: false, error: '请先登录' });
         const room = this.roomByCode(code);
         if (!room) return ack?.({ ok: false, error: '房间不存在，可能已结束或已过期' });
+        this.leaveCurrentRoom(socket, code);
         // 同一账号已在房间中（如换了浏览器标签/清了会话）：直接回合，不再新增玩家
         const existing = room.players.find((p) => p.uid === user.uid);
         if (existing) {
@@ -431,12 +477,13 @@ export class RoomManager {
       },
     );
 
-    socket.on('room:rejoin', (payload: { code?: string; token?: string }, ack?: Ack) => {
+    on('room:rejoin', (payload: { code?: string; token?: string }, ack?: Ack) => {
       const code = String(payload?.code ?? '').trim().toUpperCase();
       const token = String(payload?.token ?? '');
       const room = this.roomByCode(code);
       const player = room?.players.find((p) => p.token === token);
       if (room && player) {
+        this.leaveCurrentRoom(socket, code);
         player.connected = true;
         socket.data.spectatorId = undefined;
         socket.data.playerId = player.id;
@@ -448,6 +495,7 @@ export class RoomManager {
       }
       const spec = room?.spectators.find((s) => s.token === token);
       if (room && spec) {
+        this.leaveCurrentRoom(socket, code);
         spec.connected = true;
         socket.data.playerId = undefined;
         socket.data.spectatorId = spec.id;
@@ -460,7 +508,7 @@ export class RoomManager {
       ack?.({ ok: false, error: '无法恢复会话，房间可能已结束' });
     });
 
-    socket.on('room:leave', (_payload: unknown, ack?: Ack) => {
+    on('room:leave', (_payload: unknown, ack?: Ack) => {
       const { room, player, spectator } = this.ctx(socket);
       // 观战者退出：直接移除，不涉及结算
       if (room && spectator) {
@@ -483,7 +531,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('room:setFeatures', (payload: { score?: boolean; cards?: boolean }, ack?: Ack) => {
+    on('room:setFeatures', (payload: { score?: boolean; cards?: boolean }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可设置' });
@@ -495,7 +543,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('room:setSeat', (payload: { seat?: string }, ack?: Ack) => {
+    on('room:setSeat', (payload: { seat?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       const seat = String(payload.seat ?? '');
@@ -507,7 +555,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('room:kick', (payload: { playerId?: string; spectatorId?: string }, ack?: Ack) => {
+    on('room:kick', (payload: { playerId?: string; spectatorId?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
@@ -527,7 +575,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:start', (_p: unknown, ack?: Ack) => {
+    on('game:start', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可开局' });
@@ -543,7 +591,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:nextRound', (_p: unknown, ack?: Ack) => {
+    on('game:nextRound', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       room.roundNo += 1;
@@ -552,7 +600,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:reveal', (_p: unknown, ack?: Ack) => {
+    on('game:reveal', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player?.card) return ack?.({ ok: false, error: '没有可亮牌的条件卡' });
       player.card.revealed = true;
@@ -560,7 +608,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:redrawAll', (_p: unknown, ack?: Ack) => {
+    on('game:redrawAll', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (!room.features.cards) return ack?.({ ok: false, error: '本局未启用条件卡' });
@@ -569,7 +617,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:redrawOne', (payload: { playerId?: string }, ack?: Ack) => {
+    on('game:redrawOne', (payload: { playerId?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (!room.features.cards) return ack?.({ ok: false, error: '本局未启用条件卡' });
@@ -590,7 +638,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('game:clearCard', (payload: { playerId?: string }, ack?: Ack) => {
+    on('game:clearCard', (payload: { playerId?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (!room.features.cards) return ack?.({ ok: false, error: '本局未启用条件卡' });
@@ -602,7 +650,7 @@ export class RoomManager {
     });
 
     // ---------- 记分 ----------
-    socket.on('score:add', (payload: { toId?: string; amountTotal?: number; note?: string }, ack?: Ack) => {
+    on('score:add', (payload: { toId?: string; amountTotal?: number; note?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (room.status !== 'playing') return ack?.({ ok: false, error: '战局尚未开始' });
@@ -647,7 +695,7 @@ export class RoomManager {
     });
 
     // 撤销需付款方与收款方双方确认：先挂请求（分数不动），双方都同意才回滚，记录永久留痕
-    socket.on('score:undo', (payload: { entryId?: number; reject?: boolean }, ack?: Ack) => {
+    on('score:undo', (payload: { entryId?: number; reject?: boolean }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (this.throttled(socket, 'undo', 10, 10e3)) return ack?.({ ok: false, error: '操作太快啦' });
@@ -718,7 +766,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('score:reset', (_p: unknown, ack?: Ack) => {
+    on('score:reset', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       room.players.forEach((p) => (p.score = 0));
@@ -728,33 +776,31 @@ export class RoomManager {
     });
 
     // ---------- 结束 ----------
-    socket.on('game:end', (_p: unknown, ack?: Ack) => {
+    on('game:end', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       const standings = this.standingsOf(room);
       if (room.gameId) dbi.finalizeGame(room.gameId, 'finished', standings);
-      dbi.deleteLiveRoom(room.code);
-      this.rooms.delete(room.code);
+      this.dropRoom(room.code);
       this.io.in(room.code).emit('gameEnded', { standings });
       this.io.in(room.code).socketsLeave(room.code);
       ack?.({ ok: true });
     });
 
-    socket.on('room:dissolve', (_p: unknown, ack?: Ack) => {
+    on('room:dissolve', (_p: unknown, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (room.gameId) {
         dbi.finalizeGame(room.gameId, 'abandoned', this.standingsOf(room));
       }
-      dbi.deleteLiveRoom(room.code);
-      this.rooms.delete(room.code);
+      this.dropRoom(room.code);
       this.io.in(room.code).emit('roomClosed', { reason: 'dissolved' });
       this.io.in(room.code).socketsLeave(room.code);
       ack?.({ ok: true });
     });
 
     // ---------- 题库配置 ----------
-    socket.on(
+    on(
       'library:setEnabled',
       (payload: { disabledCardIds?: string[]; disabledCategoryIds?: string[] }, ack?: Ack) => {
         const { room, player } = this.ctx(socket);
@@ -766,7 +812,7 @@ export class RoomManager {
       },
     );
 
-    socket.on('library:addCustom', (payload: { text?: string; category?: Category }, ack?: Ack) => {
+    on('library:addCustom', (payload: { text?: string; category?: Category }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       const text = String(payload.text ?? '').trim().slice(0, 100);
@@ -777,7 +823,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on(
+    on(
       'library:updateCustom',
       (payload: { id?: string; text?: string; category?: Category; enabled?: boolean }, ack?: Ack) => {
         const { room, player } = this.ctx(socket);
@@ -790,7 +836,7 @@ export class RoomManager {
       },
     );
 
-    socket.on('library:deleteCustom', (payload: { id?: string }, ack?: Ack) => {
+    on('library:deleteCustom', (payload: { id?: string }, ack?: Ack) => {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       dbi.deleteCustomCard(String(payload.id));
@@ -798,7 +844,7 @@ export class RoomManager {
       this.broadcastRoom(room);
     });
 
-    socket.on('disconnect', () => {
+    on('disconnect', () => {
       const { room, player, spectator } = this.ctx(socket);
       if (!room) return;
       if (player) {

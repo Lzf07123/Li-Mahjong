@@ -91,7 +91,13 @@ export default function App() {
         if (saved) {
           emitAck('room:rejoin', { code: v.code, token: saved.token })
             .then((r) => setMyId(r.playerId as string))
-            .catch(() => {});
+            .catch(() => {
+              // 恢复失败（房间已结束/会话失效）：清掉本地会话与身份，让房间页回门禁重新加入，
+              // 否则会永远停留在不再更新的冻结快照上（顶栏还显示“已同步”）
+              clearSession(v.code);
+              setMyId(null);
+              toast('房间会话已失效，请重新加入', 'error');
+            });
         }
       }
     };

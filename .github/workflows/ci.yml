@@ -41,10 +41,13 @@ jobs:
       - name: 前端类型检查与构建
         run: docker compose -f docker-compose.dev.yml run --rm web npm run build
 
-      - name: 持久化验证（开局记账 → 重启容器 → 会话恢复 + 历史完整）
+      - name: 持久化验证 + 幽灵房间回归（开局记账/记账后立即结束 → 重启容器 → 会话恢复 + 历史完整 + 无幽灵残留）
         run: |
+          GHOST=$(docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs ghost-setup)
+          echo "$GHOST"
           OUT=$(docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs setup)
           echo "$OUT"
+          GCODE=$(echo "$GHOST" | jq -r .code)
           CODE=$(echo "$OUT" | jq -r .code)
           RTOKEN=$(echo "$OUT" | jq -r .roomToken)
           docker compose -f docker-compose.dev.yml restart server
@@ -53,3 +56,4 @@ jobs:
             sleep 2
           done
           docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs verify "$CODE" "$RTOKEN"
+          docker compose -f docker-compose.dev.yml exec -T server node /app/test/persist.mjs ghost-verify "$GCODE"

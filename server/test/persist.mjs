@@ -98,7 +98,53 @@ async function main() {
     }));
     process.exit(okPlay && host?.score === 66 && snap.entries.length === 1 && !!host?.cardText ? 0 : 1);
   }
-  console.error('usage: node persist.mjs setup|verify <code> <roomToken>');
+  if (phase === 'ghost-setup') {
+    // 幽灵房间回归：记账后立即结束战局（<400ms 防抖窗口内删除房间），
+    // 若删除路径未取消挂起的落盘定时器，幽灵房间行会在窗口期后被写回 live_rooms
+    const s = io(URL, { transports: ['websocket'] });
+    const s2 = io(URL, { transports: ['websocket'] });
+    await new Promise((r) => s.on('connect', r));
+    await new Promise((r) => s2.on('connect', r));
+    const token = await register('persist_g1');
+    const token2 = await register('persist_g2');
+    const snap1P = waitRev(s, 1);
+    const c = await emit(s, 'room:create', { token });
+    const snap1 = await snap1P;
+    const joinP = waitRev(s, snap1.rev + 1);
+    await emit(s2, 'room:join', { code: c.code, token: token2 });
+    await joinP;
+    const startP = waitRev(s, snap1.rev + 2);
+    await emit(s, 'game:start');
+    const playing = await startP;
+    const ids = playing.players.map((p) => p.id);
+    const addP = waitRev(s, snap1.rev + 3);
+    await emit(s2, 'score:add', { toId: ids[0], amountTotal: 8 });
+    await addP;
+    // 不等落盘、立即结束：删除房间时应取消挂起中的落盘定时器
+    await emit(s, 'game:end');
+    // 等过防抖窗口 + 余量：若定时器未被取消，幽灵行此时已被写回
+    await new Promise((r) => setTimeout(r, 1500));
+    console.log(JSON.stringify({ code: c.code }));
+    process.exit(0);
+  }
+  if (phase === 'ghost-verify') {
+    const [code] = process.argv.slice(3);
+    // 重启后：房间不得复活；战局终态必须仍是 finished（未被幽灵房间的 abandoned 覆盖）
+    const alive = await fetch(`${URL}/api/room/${code}/alive`).then((r) => r.json());
+    const login = await fetch(`${URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-captcha': '1', 'x-test-ratelimit': '1' },
+      body: JSON.stringify({ loginName: 'persist_g1', password: 'persist1234' }),
+    }).then((r) => r.json());
+    if (!login.token) throw new Error('ghost-verify 登录失败: ' + (login.error || ''));
+    const history = await fetch(`${URL}/api/history`, {
+      headers: { authorization: `Bearer ${login.token}` },
+    }).then((r) => r.json());
+    const g = (history.items ?? []).find((x) => x.code === code);
+    console.log(JSON.stringify({ alive: !!alive.alive, gameStatus: g?.status ?? 'missing' }));
+    process.exit(!alive.alive && g?.status === 'finished' ? 0 : 1);
+  }
+  console.error('usage: node persist.mjs setup|verify <code> <roomToken>|ghost-setup|ghost-verify <code>');
   process.exit(2);
 }
 

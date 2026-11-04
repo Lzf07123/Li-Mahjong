@@ -383,3 +383,18 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 dbi.purgeExpiredSessions();
 const sessionPurgeTimer = setInterval(() => dbi.purgeExpiredSessions(), 60 * 60 * 1000);
 sessionPurgeTimer.unref();
+
+// 优雅关闭：docker stop 发送 SIGTERM 时同步落盘全部进行中房间，防抖窗口内的最后状态不丢
+function shutdown(signal: string): void {
+  console.log(`[mahjong] 收到 ${signal}，落盘进行中房间后退出`);
+  try {
+    for (const room of rm.roomsSnapshot()) dbi.saveLiveRoom(room.code, room);
+  } catch (err) {
+    console.error('[mahjong] 退出落盘失败:', err);
+  }
+  rm.destroy();
+  httpServer.close();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
