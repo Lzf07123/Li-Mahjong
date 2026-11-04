@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../App';
 import { clearLeftMark, clearSession, emitAck, emitRoomAck, loadAuth, loadSession, saveSession, wasRoomLeft } from '../socket';
 import type { PlayerView } from '../types';
@@ -13,6 +12,9 @@ import { ManageSheet } from '../components/ManageSheet';
 import type { Snapshot } from '../types';
 
 type Tab = 'score' | 'card' | 'ledger' | 'manage';
+
+// qrcode.react 按需加载：点开二维码才拉取，不占首屏
+const QRCodeSVG = lazy(() => import('qrcode.react').then((m) => ({ default: m.QRCodeSVG })));
 
 export default function Room({ code }: { code: string }) {
   const { snap, myId, setMyId, go } = useApp();
@@ -234,7 +236,10 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
         </div>
         {showQR && (
           <div className="mx-auto mt-4 w-fit animate-pop rounded-2xl bg-white p-3 shadow-xl">
-            <QRCodeSVG value={joinUrl} size={168} />
+            {/* qrcode.react 按需加载：点开二维码才拉取，不占首屏 */}
+            <Suspense fallback={<div className="h-[168px] w-[168px] animate-pulse rounded bg-stone-200" />}>
+              <QRCodeSVG value={joinUrl} size={168} />
+            </Suspense>
             <p className="mt-1.5 text-center text-[10px] font-semibold text-stone-500">扫码直接加入</p>
           </div>
         )}

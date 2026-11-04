@@ -64,6 +64,8 @@ export class RoomManager {
     this.restore();
     this.sweepTimer = setInterval(() => this.sweep(), 10 * 60 * 1000);
     this.sessionTimer = setInterval(() => this.sweepSessions(), 30 * 1000);
+    this.sweepTimer.unref();
+    this.sessionTimer.unref();
   }
 
   get categoriesMeta() {
@@ -244,6 +246,23 @@ export class RoomManager {
   }
 
   // ---------- 快照 ----------
+  /** 玩家视图列表：cardText/cardCategory 仅对本人或已亮出的卡可见（playerId=null 即观战者视角） */
+  private playerViews(room: Room, playerId: string | null) {
+    return room.players.map((p) => ({
+      id: p.id,
+      uid: p.uid ?? null,
+      name: p.name,
+      seat: p.seat,
+      score: p.score,
+      connected: p.connected,
+      isHost: p.id === room.hostId,
+      hasCard: !!p.card,
+      cardRevealed: p.card?.revealed ?? false,
+      cardText: p.card && (p.card.revealed || p.id === playerId) ? p.card.text : null,
+      cardCategory: p.card && (p.card.revealed || p.id === playerId) ? p.card.category : null,
+    }));
+  }
+
   snapshotFor(room: Room, playerId: string | null): Snapshot {
     return {
       code: room.code,
@@ -252,19 +271,7 @@ export class RoomManager {
       rev: room.rev,
       features: room.features,
       hostId: room.hostId,
-      players: room.players.map((p) => ({
-        id: p.id,
-        uid: p.uid ?? null,
-        name: p.name,
-        seat: p.seat,
-        score: p.score,
-        connected: p.connected,
-        isHost: p.id === room.hostId,
-        hasCard: !!p.card,
-        cardRevealed: p.card?.revealed ?? false,
-        cardText: p.card && (p.card.revealed || p.id === playerId) ? p.card.text : null,
-        cardCategory: p.card && (p.card.revealed || p.id === playerId) ? p.card.category : null,
-      })),
+      players: this.playerViews(room, playerId),
       spectators: room.spectators.map((s) => ({ id: s.id, name: s.name, connected: s.connected })),
       entries: room.entries.slice(-60).reverse(),
       entryCount: room.entries.length,
@@ -278,9 +285,27 @@ export class RoomManager {
   private broadcast(room: Room): void {
     const sockets = this.io.sockets.adapter.rooms.get(room.code);
     if (!sockets) return;
+    // 公共快照（观战者视角，不含私有卡面）只构建一次：满房 4 玩家 + 20 观战时
+    // 从 24 次全量构建/序列化降为 1 次公共 + 至多 4 份玩家私有覆盖。
+    // 快照对象构建后即不再变更，共享同一引用是安全的。
+    const base = this.snapshotFor(room, null);
+    let personal: Snapshot | null = null;
+    let personalId: string | null = null;
     for (const sid of sockets) {
       const s = this.io.sockets.sockets.get(sid);
-      if (s) s.emit('state', this.snapshotFor(room, s.data.playerId ?? null));
+      if (!s) continue;
+      const pid: string | null = s.data.playerId ?? null;
+      const isPlayer = pid !== null && room.players.some((p) => p.id === pid);
+      if (!isPlayer) {
+        s.emit('state', base);
+        continue;
+      }
+      // 同一玩家的多个连接（多标签）共享一份个性化快照
+      if (pid !== personalId) {
+        personal = { ...base, players: this.playerViews(room, pid) };
+        personalId = pid;
+      }
+      s.emit('state', personal);
     }
   }
 
@@ -311,6 +336,7 @@ export class RoomManager {
     const pool = this.availableCards(room).filter((c) => !room.usedOnceCardIds.includes(c.id));
     if (pool.length === 0) return;
     const shuffled = shuffle(pool);
+    const draws: { gameId: number; roundNo: number; playerName: string; cardText: string; category: string }[] = [];
     room.players.forEach((p, i) => {
       // 若“一晚限一次”卡被抽到，自动跳过换下一张（在洗好的队列里向后找）
       let idx = i % shuffled.length;
@@ -323,10 +349,17 @@ export class RoomManager {
       }
       p.card = { cardId: card.id, text: card.text, category: card.category, revealed: false };
       if (card.once && !room.usedOnceCardIds.includes(card.id)) room.usedOnceCardIds.push(card.id);
-      if (room.gameId) {
-        dbi.addConditionDraw(room.gameId, room.roundNo, p.name, card.text, card.category);
-      }
+      if (room.gameId)
+        draws.push({
+          gameId: room.gameId,
+          roundNo: room.roundNo,
+          playerName: p.name,
+          cardText: card.text,
+          category: card.category,
+        });
     });
+    // 整局发牌一次性入账（单事务），避免逐条 autocommit 各刷一次盘
+    if (draws.length) dbi.addConditionDraws(draws);
   }
 
   // ---------- 连接处理 ----------

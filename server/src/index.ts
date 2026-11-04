@@ -279,10 +279,19 @@ app.put('/api/admin/users/:uid/password', requireAdmin, ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.get('/api/library', (_req, res) => {
+// 内置题库为静态资源：启动时读盘一次，/api/library 每次请求只查自定义卡
+const builtinLibrary: { categories: unknown; cards: unknown } = (() => {
   const file = path.join(here, '..', 'data', 'builtin-conditions.json');
-  const data = JSON.parse(readFileSync(file, 'utf-8'));
-  res.json({ categories: data.categories, builtin: data.cards, custom: dbi.listAllCustomCards() });
+  try {
+    return JSON.parse(readFileSync(file, 'utf-8'));
+  } catch (err) {
+    console.error('[mahjong] 内置题库读取失败:', err);
+    return { categories: [], cards: [] };
+  }
+})();
+
+app.get('/api/library', (_req, res) => {
+  res.json({ categories: builtinLibrary.categories, builtin: builtinLibrary.cards, custom: dbi.listAllCustomCards() });
 });
 
 // ---------- 管理后台 ----------

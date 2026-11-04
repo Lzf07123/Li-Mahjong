@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import type { ScoreEntryView, Snapshot } from '../types';
 import { emitAck } from '../socket';
@@ -8,14 +9,17 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
   const { toast } = useApp();
   const entries = snap.entries;
 
-  const act = async (entryId: number, okMsg: (state?: string) => string, reject = false) => {
-    try {
-      const r = await emitAck('score:undo', { entryId, reject });
-      toast(okMsg(r.state as string | undefined), 'success');
-    } catch (e) {
-      toast((e as Error).message, 'error');
-    }
-  };
+  const act = useCallback(
+    async (entryId: number, okMsg: (state?: string) => string, reject = false) => {
+      try {
+        const r = await emitAck('score:undo', { entryId, reject });
+        toast(okMsg(r.state as string | undefined), 'success');
+      } catch (e) {
+        toast((e as Error).message, 'error');
+      }
+    },
+    [toast],
+  );
 
   if (entries.length === 0) {
     return (
@@ -28,15 +32,12 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
     );
   }
 
-  // 按局分组（entries 已按时间倒序）
-  const groups: { roundNo: number; items: typeof entries }[] = [];
+  // 按局分组（entries 已按时间倒序；Map 分组 O(n)，比每条 find 扫描快一个数量级）
+  const groups = new Map<number, typeof entries>();
   for (const e of entries) {
-    let g = groups.find((x) => x.roundNo === e.roundNo);
-    if (!g) {
-      g = { roundNo: e.roundNo, items: [] };
-      groups.push(g);
-    }
-    g.items.push(e);
+    const g = groups.get(e.roundNo);
+    if (g) g.push(e);
+    else groups.set(e.roundNo, [e]);
   }
 
   return (
@@ -48,16 +49,16 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
         <span className="text-[11px] font-normal text-white/40">共 {snap.entryCount} 笔</span>
       </h3>
       <div className="space-y-3">
-        {groups.map((g) => (
-          <div key={g.roundNo}>
+        {[...groups.entries()].map(([roundNo, items]) => (
+          <div key={roundNo}>
             <div className="mb-1.5 flex items-center gap-2">
               <span className="rounded-md bg-felt-600/40 px-2 py-0.5 text-[11px] font-bold text-emerald-200">
-                第 {g.roundNo} 局
+                第 {roundNo} 局
               </span>
               <span className="h-px flex-1 bg-white/10" />
             </div>
             <div className="space-y-1.5">
-              {g.items.map((e) => (
+              {items.map((e) => (
                 <LedgerRow key={e.id} e={e} myId={myId} isHost={isHost} act={act} />
               ))}
             </div>
@@ -68,7 +69,7 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
   );
 }
 
-function LedgerRow({
+const LedgerRow = memo(function LedgerRow({
   e,
   myId,
   isHost,
@@ -165,4 +166,4 @@ function LedgerRow({
       {action}
     </div>
   );
-}
+});

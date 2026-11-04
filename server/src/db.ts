@@ -19,6 +19,8 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new Database(path.join(DATA_DIR, 'mahjong.db'));
 db.pragma('journal_mode = WAL');
+// WAL 下 NORMAL 安全：断电最多丢最近一次提交，不会损坏库；每次 commit 不再强制 fsync
+db.pragma('synchronous = NORMAL');
 db.pragma('busy_timeout = 5000');
 
 db.exec(`
@@ -121,6 +123,35 @@ try {
 } catch {
   /* 索引已存在 */
 }
+
+// 高频查询索引：登录会话清理、战绩列表排序、管理大盘近 7 日、按账号聚合统计
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
+CREATE INDEX IF NOT EXISTS idx_games_started ON games(started_at);
+CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_gp_uid ON game_players(uid);
+`);
+
+// ---------- 高频 prepared statements（better-sqlite3 不缓存语句，热路径复用避免重复编译） ----------
+const stmtUserBySession = db.prepare(
+  'SELECT u.uid, u.name, u.username FROM sessions s JOIN users u ON u.uid = s.uid WHERE s.token = ? AND s.expires_at > ?',
+);
+const stmtSessionDeleteExpired = db.prepare('DELETE FROM sessions WHERE token = ? AND expires_at < ?');
+const stmtSaveLiveRoom = db.prepare(
+  `INSERT INTO live_rooms (code, state, updated_at) VALUES (?, ?, ?)
+   ON CONFLICT(code) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+);
+const stmtDeleteLiveRoom = db.prepare('DELETE FROM live_rooms WHERE code = ?');
+const stmtListEnabledCards = db.prepare(
+  'SELECT id, text, category FROM library_cards WHERE enabled = 1 ORDER BY created_at DESC',
+);
+const stmtAddScoreEntry = db.prepare(
+  'INSERT INTO score_entries (game_id, round_no, payers, to_name, amount_total, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+);
+const stmtAddConditionDraw = db.prepare(
+  'INSERT INTO condition_draws (game_id, round_no, player_name, card_text, category, drawn_at) VALUES (?, ?, ?, ?, ?, ?)',
+);
 
 // ---------- 账号认证 ----------
 // scrypt 参数显式声明并随哈希一起存储（格式 scrypt$N$r$p$salt$hash），后续升级参数可平滑迁移。
@@ -227,15 +258,11 @@ export function deleteSession(token: string): void {
 
 export function userBySession(token: string): UserRow | undefined {
   if (!token) return undefined;
-  const s = db.prepare('SELECT uid, expires_at FROM sessions WHERE token = ?').get(token) as
-    | { uid: string; expires_at: number }
-    | undefined;
-  if (!s) return undefined;
-  if (s.expires_at < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-    return undefined;
-  }
-  return getUserByUid(s.uid);
+  // 单查询联表返回用户；未命中且会话已过期时顺手清掉该行
+  const u = stmtUserBySession.get(token, Date.now()) as UserRow | undefined;
+  if (u) return u;
+  stmtSessionDeleteExpired.run(token, Date.now());
+  return undefined;
 }
 
 /** 清理已过期的会话记录（定时调用，防止表无限增长） */
@@ -277,6 +304,10 @@ export interface MeInfo {
   wins: number;
 }
 
+/** 胜场判定公共片段：每局最高分（并列都算胜）；避免逐行相关子查询 */
+const WIN_JOIN = `JOIN (SELECT game_id, MAX(final_score) AS max_score FROM game_players GROUP BY game_id) w ON w.game_id = gp.game_id`;
+const WIN_SUM = `COALESCE(SUM(CASE WHEN gp.final_score = w.max_score THEN 1 ELSE 0 END), 0) AS wins`;
+
 export function meInfo(uid: string): MeInfo {
   const u = db.prepare('SELECT uid, name FROM users WHERE uid = ?').get(uid) as
     | { uid: string; name: string }
@@ -284,11 +315,10 @@ export function meInfo(uid: string): MeInfo {
   if (!u) return { uid, name: '', games: 0, total: 0, wins: 0 };
   const agg = db
     .prepare(
-      `SELECT COUNT(*) AS games, COALESCE(SUM(final_score), 0) AS total,
-              COALESCE(SUM(CASE WHEN final_score = (
-                    SELECT MAX(final_score) FROM game_players WHERE game_id = gp.game_id
-                  ) THEN 1 ELSE 0 END), 0) AS wins
-       FROM game_players gp JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+      `SELECT COUNT(*) AS games, COALESCE(SUM(gp.final_score), 0) AS total, ${WIN_SUM}
+       FROM game_players gp
+       JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+       ${WIN_JOIN}
        WHERE gp.uid = ?`,
     )
     .get(uid) as { games: number; total: number; wins: number };
@@ -310,10 +340,7 @@ export function addScoreEntry(
   amountTotal: number,
   note?: string,
 ): number {
-  const stmt = db.prepare(
-    'INSERT INTO score_entries (game_id, round_no, payers, to_name, amount_total, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  );
-  const info = stmt.run(
+  const info = stmtAddScoreEntry.run(
     gameId,
     roundNo,
     JSON.stringify(payers),
@@ -337,9 +364,17 @@ export function addConditionDraw(
   cardText: string,
   category: string,
 ): void {
-  db.prepare(
-    'INSERT INTO condition_draws (game_id, round_no, player_name, card_text, category, drawn_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(gameId, roundNo, playerName, cardText, category, Date.now());
+  stmtAddConditionDraw.run(gameId, roundNo, playerName, cardText, category, Date.now());
+}
+
+/** 整局发牌批量入账（单事务，一次刷盘） */
+export function addConditionDraws(
+  rows: { gameId: number; roundNo: number; playerName: string; cardText: string; category: string }[],
+): void {
+  const tx = db.transaction(() => {
+    for (const r of rows) addConditionDraw(r.gameId, r.roundNo, r.playerName, r.cardText, r.category);
+  });
+  tx();
 }
 
 export function finalizeGame(
@@ -364,14 +399,11 @@ export function finalizeGame(
 
 // ---------- 进行中房间快照 ----------
 export function saveLiveRoom(code: string, state: unknown): void {
-  db.prepare(
-    `INSERT INTO live_rooms (code, state, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(code) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
-  ).run(code, JSON.stringify(state), Date.now());
+  stmtSaveLiveRoom.run(code, JSON.stringify(state), Date.now());
 }
 
 export function deleteLiveRoom(code: string): void {
-  db.prepare('DELETE FROM live_rooms WHERE code = ?').run(code);
+  stmtDeleteLiveRoom.run(code);
 }
 
 export function loadLiveRooms(): { code: string; state: string; updatedAt: number }[] {
@@ -382,9 +414,7 @@ export function loadLiveRooms(): { code: string; state: string; updatedAt: numbe
 
 // ---------- 自定义题库 ----------
 export function listCustomCards(): CardDef[] {
-  const rows = db
-    .prepare('SELECT id, text, category FROM library_cards WHERE enabled = 1 ORDER BY created_at DESC')
-    .all() as { id: string; text: string; category: Category }[];
+  const rows = stmtListEnabledCards.all() as { id: string; text: string; category: Category }[];
   return rows.map((r) => ({ id: r.id, text: r.text, category: r.category }));
 }
 
@@ -421,19 +451,26 @@ export function historyList(limit = 50): HistoryListItem[] {
   const games = db
     .prepare("SELECT id, code, status, started_at, ended_at FROM games WHERE status != 'live' ORDER BY started_at DESC LIMIT ?")
     .all(limit) as { id: number; code: string; status: string; started_at: number; ended_at: number | null }[];
-  const gp = db.prepare('SELECT name, seat, final_score, uid FROM game_players WHERE game_id = ?');
+  if (games.length === 0) return [];
+  // 一次性取回全部玩家，避免每场游戏一条查询的 N+1
+  const ids = games.map((g) => g.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT game_id, name, seat, final_score, uid FROM game_players WHERE game_id IN (${placeholders}) ORDER BY rowid`)
+    .all(...ids) as { game_id: number; name: string; seat: string; final_score: number; uid: string | null }[];
+  const byGame = new Map<number, { name: string; seat: string; finalScore: number; uid: string | null }[]>();
+  for (const p of rows) {
+    let list = byGame.get(p.game_id);
+    if (!list) byGame.set(p.game_id, (list = []));
+    list.push({ name: p.name, seat: p.seat, finalScore: p.final_score, uid: p.uid });
+  }
   return games.map((g) => ({
     id: g.id,
     code: g.code,
     status: g.status,
     startedAt: g.started_at,
     endedAt: g.ended_at,
-    players: (gp.all(g.id) as { name: string; seat: string; final_score: number; uid: string | null }[]).map((p) => ({
-      name: p.name,
-      seat: p.seat,
-      finalScore: p.final_score,
-      uid: p.uid,
-    })),
+    players: byGame.get(g.id) ?? [],
   }));
 }
 
@@ -500,11 +537,10 @@ export function stats(): StatsItem[] {
       `SELECT COALESCE(NULLIF(gp.uid, ''), gp.name) AS key,
               MAX(gp.name) AS name,
               COUNT(*) AS games, SUM(gp.final_score) AS total,
-              SUM(CASE WHEN gp.final_score = (
-                    SELECT MAX(final_score) FROM game_players WHERE game_id = gp.game_id
-                  ) THEN 1 ELSE 0 END) AS wins
+              ${WIN_SUM}
        FROM game_players gp
        JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+       ${WIN_JOIN}
        GROUP BY key
        ORDER BY total DESC`,
     )
@@ -612,11 +648,10 @@ export function adminUsers(query: string): AdminUserRow[] {
          SELECT gp.uid AS uid,
                 COUNT(*) AS games,
                 SUM(gp.final_score) AS total,
-                SUM(CASE WHEN gp.final_score = (
-                      SELECT MAX(final_score) FROM game_players WHERE game_id = gp.game_id
-                    ) THEN 1 ELSE 0 END) AS wins
+                SUM(CASE WHEN gp.final_score = w.max_score THEN 1 ELSE 0 END) AS wins
          FROM game_players gp
          JOIN games g ON g.id = gp.game_id AND g.status = 'finished'
+         JOIN (SELECT game_id, MAX(final_score) AS max_score FROM game_players GROUP BY game_id) w ON w.game_id = gp.game_id
          WHERE gp.uid IS NOT NULL AND gp.uid != ''
          GROUP BY gp.uid
        ) s ON s.uid = u.uid

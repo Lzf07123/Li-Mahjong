@@ -12,8 +12,7 @@ export function Scoreboard({
   vertical?: boolean;
   showScore?: boolean;
 }) {
-  const ranked = [...snap.players].sort((a, b) => b.score - a.score);
-  const topScore = ranked[0]?.score ?? 0;
+  const topScore = Math.max(...snap.players.map((p) => p.score), 0);
 
   if (vertical) {
     return (
@@ -35,8 +34,7 @@ export function Scoreboard({
 
 export function PlayerStrip({ snap, myId, showScore = true }: { snap: Snapshot; myId: string | null; showScore?: boolean }) {
   // 手机端吸顶横滑条
-  const ranked = [...snap.players].sort((a, b) => b.score - a.score);
-  const topScore = ranked[0]?.score ?? 0;
+  const topScore = Math.max(...snap.players.map((p) => p.score), 0);
   return (
     <div className="flex gap-2 overflow-x-auto px-4 pb-1 lg:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {snap.players.map((p) => (

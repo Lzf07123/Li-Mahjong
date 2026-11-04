@@ -1,10 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { socket, clearAuth, loadSession, clearSession, markRoomLeft, emitAck } from './socket';
 import type { Snapshot } from './types';
 import Home from './views/Home';
 import Room from './views/Room';
-import { HistoryList, HistoryDetail } from './views/History';
-import Admin from './views/Admin';
+
+// 低频视图按需加载：Admin(管理后台)/History(战绩) 不进首屏 bundle
+const HistoryList = lazy(() => import('./views/History').then((m) => ({ default: m.HistoryList })));
+const HistoryDetail = lazy(() => import('./views/History').then((m) => ({ default: m.HistoryDetail })));
+const Admin = lazy(() => import('./views/Admin'));
 
 export type View =
   | { name: 'home' }
@@ -154,7 +157,12 @@ export default function App() {
     };
   }, [myId, toast]);
 
-  const ctx: AppCtxValue = { snap, setSnap, myId, setMyId, conn, toast, go, back };
+  // 稳定引用：toast/go/back/setState 恒定，snap/myId/conn 变化才换 ctx 身份，
+  // 避免每弹一条 toast 就让全部 useApp() 消费者重渲染
+  const ctx = useMemo<AppCtxValue>(
+    () => ({ snap, setSnap, myId, setMyId, conn, toast, go, back }),
+    [snap, myId, conn, toast, go, back],
+  );
 
   return (
     <AppCtx.Provider value={ctx}>
@@ -162,12 +170,32 @@ export default function App() {
       <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col">
         {view.name === 'home' && <Home />}
         {view.name === 'room' && <Room code={view.code} />}
-        {view.name === 'history' && <HistoryList />}
-        {view.name === 'historyDetail' && <HistoryDetail id={view.id} />}
-        {view.name === 'admin' && <Admin />}
+        {view.name === 'history' && (
+          <Suspense fallback={<ViewLoader />}>
+            <HistoryList />
+          </Suspense>
+        )}
+        {view.name === 'historyDetail' && (
+          <Suspense fallback={<ViewLoader />}>
+            <HistoryDetail id={view.id} />
+          </Suspense>
+        )}
+        {view.name === 'admin' && (
+          <Suspense fallback={<ViewLoader />}>
+            <Admin />
+          </Suspense>
+        )}
       </div>
       <ToastViewport toasts={toasts} />
     </AppCtx.Provider>
+  );
+}
+
+function ViewLoader() {
+  return (
+    <div className="flex flex-1 items-center justify-center py-16">
+      <p className="animate-pulse text-sm text-white/50">加载中…</p>
+    </div>
   );
 }
 
