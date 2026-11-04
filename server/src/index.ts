@@ -358,7 +358,18 @@ const rm = new RoomManager(io);
 io.on('connection', (socket) => rm.register(socket));
 
 if (STATIC_DIR) {
-  app.use(express.static(STATIC_DIR));
+  app.use(
+    express.static(STATIC_DIR, {
+      setHeaders(res, filePath) {
+        // 带内容哈希的构建产物可永久缓存;Service Worker 文件每次协商缓存,保证发版后及时更新
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (filePath.endsWith('sw.js')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }),
+  );
   app.get(/^(?!\/api|\/socket\.io).*/, (_req, res) => {
     res.sendFile(path.join(STATIC_DIR, 'index.html'));
   });

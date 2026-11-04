@@ -1,5 +1,8 @@
 # 雀记 · 在线麻将记分 + 整蛊条件卡
 
+[![CI](https://github.com/Lzf07123/Li-Mahjong/actions/workflows/ci.yml/badge.svg)](https://github.com/Lzf07123/Li-Mahjong/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v1.0.0-0b3d2e)](https://github.com/Lzf07123/Li-Mahjong/releases)
+
 四人麻将牌桌的实时记分网页：一人建房，其他人扫码/输房间码加入，各用自己手机实时看总分；
 每局开始自动给每人发一张「整蛊条件卡」（内置 73 张题库，源自经典牌桌纸条），支持自定义题库；
 手动记账流水、撤销、历史战局复盘与累计盈亏统计。支持**观战**与**手机添加到主屏（PWA）**。
@@ -36,7 +39,8 @@
   近 7 日曲线 + 盈亏榜）+ 用户管理（搜索/改名/重置密码/删除）+ 页脚设置（GitHub 链接与自定义文字，留空隐藏）；
   已适配移动端
 - 📱 **响应式 + PWA**：手机（吸顶比分条 + 底部标签）/ 平板双栏 / 桌面三栏中控台；
-  手机浏览器「添加到主屏幕」后以独立 App 打开（manifest + 图标，无需应用商店）
+  手机浏览器「添加到主屏幕」后以独立 App 打开（manifest + 图标，无需应用商店）；
+  Service Worker 离线缓存页面壳与静态资源，弱网/断网不再白屏，二次打开秒开
 
 ## 技术栈
 
@@ -161,7 +165,7 @@ docker compose up -d --build
 │  ├─ src/{index,rooms,db,types}.ts
 │  ├─ data/builtin-conditions.json   # 内置题库 73 张
 │  └─ test/{smoke,sec,persist}.mjs
-├─ web/                    # React + Vite + Tailwind v4（public/ 内含 PWA manifest 与图标）
+├─ web/                    # React + Vite + Tailwind v4（public/ 内含 PWA manifest、图标与 Service Worker）
 └─ .test-artifacts/        # E2E 截图与脚本
 ```
 
