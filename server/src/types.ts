@@ -77,6 +77,8 @@ export interface LeftPlayer {
   seat: string;
   score: number;
   uid: string | null;
+  /** 离场时的玩家 id：撤销回滚归档分数用（旧快照无此字段，回退按昵称匹配） */
+  pid?: string;
 }
 
 /** 观战者：只读进入房间，不占座位、不参与记分与结算 */

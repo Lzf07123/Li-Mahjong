@@ -292,7 +292,8 @@ async function main() {
   const reSpec = await emit(specSock2, 'room:join', { code: code2, token: t5, asSpectator: true });
   assert(reSpec.ok && reSpec.spectator === true && reSpec.rebound === true, '同账号观战回合（rebound）');
   specSock2.disconnect();
-  await waitPred(clients[0], (s) => s.spectators.length === 1 && s.spectators[0].connected === false);
+  // 多标签：仅断开其一连接，观战者仍在线（最后一根连接断开才离线）
+  await waitPred(clients[0], (s) => s.spectators.length === 1 && s.spectators[0].connected === true);
   const specLeave = await emit(specSock, 'room:leave');
   assert(specLeave.ok, '观战者退出');
   await waitPred(clients[0], (s) => s.spectators.length === 0);

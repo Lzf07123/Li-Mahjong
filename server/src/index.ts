@@ -232,7 +232,13 @@ app.post('/api/auth/change-name', (req, res) => {
   const name = String(req.body?.name ?? '').trim();
   if (!NAME_RE.test(name)) return res.status(400).json({ error: '昵称 2-12 位，可含中文、字母、数字、下划线' });
   dbi.updateNameByUid(user.uid, name);
-  res.json({ ok: true, user: { uid: user.uid, name } });
+  // 昵称变更联动进行中的房间（牌桌/条件卡/流水展示名）；房内重名时该房间暂保留原昵称
+  const collided = rm.renameUid(user.uid, name);
+  res.json({
+    ok: true,
+    user: { uid: user.uid, name },
+    ...(collided ? { warn: '所在房间已有同名玩家，房间内暂保留原昵称' } : {}),
+  });
 });
 
 // 登录后自助修改密码（需验证旧密码）
@@ -309,6 +315,7 @@ app.patch('/api/admin/users/:uid', requireAdmin, (req, res) => {
   if (!name) return res.status(400).json({ error: '昵称不能为空' });
   if (!dbi.adminRenameUser(String(req.params.uid), name))
     return res.status(404).json({ error: '用户不存在' });
+  rm.renameUid(String(req.params.uid), name); // 联动进行中房间（重名冲突时该房间静默保留原名）
   res.json({ ok: true });
 });
 

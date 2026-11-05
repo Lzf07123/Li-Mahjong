@@ -159,7 +159,7 @@ export const api = {
     }),
   logout: () => postJson<{ ok: boolean }>('/api/auth/logout', {}),
   changeName: (name: string) =>
-    authedPost<{ ok: boolean; user: AuthUser }>('/api/auth/change-name', { name }),
+    authedPost<{ ok: boolean; user: AuthUser; warn?: string }>('/api/auth/change-name', { name }),
   changePassword: (oldPassword: string, newPassword: string) =>
     authedPost<{ ok: boolean }>('/api/auth/change-password', { oldPassword, newPassword }),
 };

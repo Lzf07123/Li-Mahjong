@@ -7,6 +7,11 @@ import { io } from 'socket.io-client';
 const URL = process.env.TEST_URL || 'http://server:3000';
 const ADMIN = { 'x-admin-token': process.env.ADMIN_TOKEN || 'admin123' };
 const BYPASS = { 'content-type': 'application/json', 'x-test-captcha': '1', 'x-test-ratelimit': '1' };
+// 开发库预置的演示账号（小张/小李），供凑满 4 人房间等场景复用
+const MJ_DEMO = [
+  '089025fa-5957-40b9-b9b0-895ec64a06d9348709b057254740aaf874a2988f4eba',
+  '5ed28825-4968-464b-8c1b-83e8e1d16870b490d24d45ad4f9db2a107e9889420f5',
+];
 let passed = 0;
 
 function assert(cond, msg) {
@@ -36,6 +41,24 @@ function connect() {
     const t = setTimeout(() => reject(new Error('连接超时')), 8000);
     s.on('connect', () => { clearTimeout(t); resolve(s); });
     s.on('connect_error', (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
+/** 等待满足条件的 state 广播（服务端先回 ack 再广播，内容过滤可避开竞态） */
+function waitState(s, pred, timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      s.off('state', h);
+      reject(new Error('未等到期望状态'));
+    }, timeoutMs);
+    const h = (st) => {
+      if (pred(st)) {
+        clearTimeout(t);
+        s.off('state', h);
+        resolve(st);
+      }
+    };
+    s.on('state', h);
   });
 }
 
@@ -94,6 +117,15 @@ async function main() {
     if (reg.status === 200) return reg.data;
     const l = await post('/api/auth/login', { loginName, password: 'pass1234' });
     if (l.status !== 200) throw new Error(`ensure 失败 ${loginName}`);
+    // 历史测试可能改过昵称（改名联动用例中断未恢复）：归位，保证后续用例按昵称查找玩家
+    if (l.data.user.name !== name) {
+      await api('/api/auth/change-name', {
+        method: 'POST',
+        headers: { ...BYPASS, authorization: `Bearer ${l.data.token}` },
+        body: JSON.stringify({ name }),
+      });
+      l.data.user.name = name;
+    }
     return l.data;
   };
   const me = await ensure('sec_user', '安全测试');
@@ -169,6 +201,148 @@ async function main() {
   s1.disconnect();
   s2.disconnect();
 
+  // 3.4b) 健壮性：重复开局拒绝 + 付款方离场后撤销仍守恒
+  {
+    const sA = await connect();
+    const sB = await connect();
+    const cRb = await emit(sA, 'room:create', { token: me.token });
+    assert(cRb.ok, '守恒测试：建房成功');
+    const uRb = await ensure('sec_user2', '安全对手');
+    await emit(sB, 'room:join', { code: cRb.code, token: uRb.token });
+    // 注意：服务端先回 ack 再广播，等待必须按内容过滤（once 会捕获到旧广播）
+    const stRbP = waitState(sA, (st) => st.status === 'playing');
+    await emit(sA, 'game:start');
+    const stRb = await stRbP;
+    const ov0 = await api('/api/admin/overview', { headers: ADMIN });
+    r = await emit(sA, 'game:start'); // playing 状态重复开局
+    assert(!r.ok, 'playing 状态重复开局 → 拒绝');
+    const ov1 = await api('/api/admin/overview', { headers: ADMIN });
+    assert(ov1.data.gamesLive === ov0.data.gamesLive, '重复开局不再产生僵尸 live 游戏');
+    // 记账 10 分：房主(付款方) → 安全对手(收款方)
+    const idPayer = stRb.players.find((p) => p.name === '安全测试').id;
+    const idReceiver = stRb.players.find((p) => p.name === '安全对手').id;
+    const st2RbP = waitState(sA, (st) => st.entries.some((e) => !e.undone));
+    await emit(sA, 'score:add', { toId: idReceiver, amountTotal: 10, note: '' });
+    const st2Rb = await st2RbP;
+    const entryRb = st2Rb.entries.find((e) => !e.undone);
+    // 付款方发起撤销（自动计票）→ 随即离场 → 收款方单方确认也应执行
+    await emit(sA, 'score:undo', { entryId: entryRb.id });
+    await emit(sA, 'room:leave');
+    const rUndo = await emit(sB, 'score:undo', { entryId: entryRb.id });
+    assert(rUndo.ok && rUndo.state === 'undone', '付款方离场后收款方确认 → 撤销执行');
+    // 结束战局（房主已转移给收款方）→ 归档分数之和必须守恒
+    await emit(sB, 'game:end');
+    const hist = await api('/api/history', { headers: { authorization: `Bearer ${me.token}` } });
+    const game = hist.data.items.find((x) => x.code === cRb.code);
+    const detail = await api(`/api/history/${game.id}`, { headers: { authorization: `Bearer ${me.token}` } });
+    const scores = detail.data.players.map((p) => p.finalScore);
+    assert(
+      scores.reduce((a, b) => a + b, 0) === 0,
+      `离场撤销账目守恒：归档分数之和 = ${scores.reduce((a, b) => a + b, 0)}（[${scores.join(', ')}]）`,
+    );
+    sA.disconnect();
+    sB.disconnect();
+  }
+
+  // 3.4c) 健壮性：小题库发牌不重复 / 多标签在线状态 / 改名联动房间
+  // 注意 room:create 按账号限流 3 次/分钟：本段 3 次建房分摊到 sec_user(1) 与 sec_user2(2)
+  {
+    // —— P3-3：题库池 2 张 < 4 名玩家 → 只有 2 人有卡，绝不两人同卡 ——
+    const sA = await connect();
+    const sB = await connect();
+    const sX = await connect();
+    const sY = await connect();
+    const cD = await emit(sA, 'room:create', { token: me.token });
+    assert(cD.ok, '发牌测试：建房成功');
+    const uRb2 = await ensure('sec_user2', '安全对手');
+    await emit(sB, 'room:join', { code: cD.code, token: uRb2.token });
+    await emit(sX, 'room:join', { code: cD.code, token: MJ_DEMO[0] });
+    await emit(sY, 'room:join', { code: cD.code, token: MJ_DEMO[1] });
+    // 停用 5 个分类 + 停用 5 张全局卡 → 池恰好剩 2 张
+    await emit(sA, 'library:setEnabled', {
+      disabledCategoryIds: ['voice', 'action', 'hu', 'rule', 'info'],
+      disabledCardIds: ['g03', 'g04', 'g05', 'g06', 'g07'],
+    });
+    const stD1P = waitState(sA, (st) => st.status === 'playing' && st.roundNo === 1);
+    await emit(sA, 'game:start');
+    const stD1 = await stD1P;
+    const withCard = stD1.players.filter((p) => p.hasCard).length;
+    assert(withCard === 2, `题库池 2 张、4 名玩家 → 仅 ${withCard} 人发到卡（其余为空，不重复发牌）`);
+    await emit(sA, 'room:dissolve');
+    sA.disconnect();
+    sB.disconnect();
+    sX.disconnect();
+    sY.disconnect();
+
+    // —— P3-4：同一账号多标签共用凭证；最后一根连接断开才离线 ——
+    const sM1 = await connect();
+    const sM2 = await connect();
+    const sObs = await connect();
+    const cM = await emit(sM1, 'room:create', { token: uRb2.token }); // sec_user2 建房（1/3）
+    assert(cM.ok, '多标签测试：建房成功');
+    const jM2 = await emit(sM2, 'room:join', { code: cM.code, token: uRb2.token }); // 第二连接（模拟多标签）
+    assert(jM2.ok && jM2.rebound && jM2.token === cM.token, '同账号第二连接回合同房且拿到相同凭证（不轮换 token）');
+    await emit(sObs, 'room:join', { code: cM.code, token: me.token }); // 观察者
+    // 等广播安静下来，用 rev 递增过滤旧广播：断开后必然有一条新广播（在线与否即断言点）
+    await new Promise((r) => setTimeout(r, 400));
+    let obsRev = -1;
+    sObs.on('state', (st) => {
+      obsRev = Math.max(obsRev, st.rev);
+    });
+    const rev1 = obsRev;
+    sM2.disconnect();
+    const stM1b2 = await waitState(sObs, (st) => st.rev > rev1);
+    assert(stM1b2.players.find((p) => p.name === '安全对手')?.connected === true, '断开其一连接 → 仍显示在线（多标签）');
+    const rev2 = obsRev;
+    sM1.disconnect();
+    const stM2b = await waitState(sObs, (st) => st.rev > rev2);
+    assert(stM2b.players.find((p) => p.name === '安全对手')?.connected === false, '最后一根连接断开 → 离线')
+    sObs.disconnect()
+
+    // —— P3-5：自助改名联动进行中房间；房内重名时跳过 ——
+    const sN1 = await connect();
+    const sN2 = await connect();
+    const cN = await emit(sN1, 'room:create', { token: uRb2.token }); // sec_user2 建房（2/3）
+    assert(cN.ok, '改名测试：建房成功');
+    await emit(sN2, 'room:join', { code: cN.code, token: me.token });
+    // 广播随改名请求处理即发出：监听必须先于 HTTP 请求注册
+    const stNP = waitState(sN2, (st) => st.players.some((p) => p.name === '安全对手二号'));
+    const cn = await api('/api/auth/change-name', {
+      method: 'POST',
+      headers: { ...BYPASS, authorization: `Bearer ${uRb2.token}` },
+      body: JSON.stringify({ name: '安全对手二号' }),
+    });
+    assert(cn.status === 200 && !cn.data.warn, '改名成功且无重名冲突');
+    const stN = await stNP;
+    assert(stN.players.some((p) => p.name === '安全对手二号'), '改名实时联动进行中房间');
+    // 改成与观察者重名 → 返回 warn 且房间不广播（保留原名）；用 game:start 的广播验证
+    const cn2 = await api('/api/auth/change-name', {
+      method: 'POST',
+      headers: { ...BYPASS, authorization: `Bearer ${uRb2.token}` },
+      body: JSON.stringify({ name: '安全测试' }),
+    });
+    assert(cn2.status === 200 && !!cn2.data.warn, '改成房内已有昵称 → 提示冲突');
+    const stStartP = waitState(sN2, (st) => st.status === 'playing');
+    await emit(sN1, 'game:start');
+    const stStart = await stStartP;
+    assert(
+      stStart.players.find((p) => p.uid === uRb2.user.uid)?.name === '安全对手二号',
+      '房内重名冲突 → 该房间保留原昵称',
+    );
+    // 恢复昵称，避免影响后续测试
+    const stRestoreP = waitState(sN2, (st) =>
+      st.players.some((p) => p.name === '安全对手' && p.uid === uRb2.user.uid),
+    );
+    await api('/api/auth/change-name', {
+      method: 'POST',
+      headers: { ...BYPASS, authorization: `Bearer ${uRb2.token}` },
+      body: JSON.stringify({ name: '安全对手' }),
+    });
+    await stRestoreP;
+    sN1.disconnect();
+    sN2.disconnect();
+  }
+
   // 3.5) 单点登录：同一时间同个账号只允许一处登录
   const solo = await ensure('sec_solo', '单点甲');
   const sSolo = await connect();
@@ -233,5 +407,6 @@ async function main() {
 
 main().catch((e) => {
   console.error(`\n❌ 安全测试失败: ${e.message}`);
+  if (e.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'));
   process.exit(1);
 });

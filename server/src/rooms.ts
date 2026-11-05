@@ -155,6 +155,28 @@ export class RoomManager {
     }
   }
 
+  /** 昵称变更联动进行中房间；返回是否因房内重名而跳过（重名会让记账流水产生歧义） */
+  renameUid(uid: string | null | undefined, name: string): boolean {
+    if (!uid) return false;
+    let collided = false;
+    for (const room of this.rooms.values()) {
+      const p = room.players.find((x) => x.uid === uid);
+      const sp = room.spectators.find((x) => x.uid === uid);
+      if (!p && !sp) continue;
+      const clash =
+        room.players.some((x) => x.uid !== uid && x.name === name) ||
+        room.spectators.some((x) => x.uid !== uid && x.name === name);
+      if (clash) {
+        collided = true;
+        continue;
+      }
+      if (p) p.name = name;
+      if (sp) sp.name = name;
+      this.broadcastRoom(room);
+    }
+    return collided;
+  }
+
   /** 房内已无玩家时自动解散（踢人/顶号/历史遗留兜底，避免残留无主僵尸房） */
   private maybeDissolve(room: Room): boolean {
     if (room.players.length > 0) return false;
@@ -327,25 +349,29 @@ export class RoomManager {
   }
 
   // ---------- 发牌 ----------
-  private deal(room: Room): void {
+  /** 按座位顺序发牌；返回本轮题库不足、未发到卡的人数（不重复发同一张卡） */
+  private deal(room: Room): number {
     if (!room.features.cards) {
       // 条件卡关闭：作废所有已发卡
       room.players.forEach((p) => (p.card = null));
-      return;
+      return 0;
     }
     const pool = this.availableCards(room).filter((c) => !room.usedOnceCardIds.includes(c.id));
-    if (pool.length === 0) return;
+    if (pool.length === 0) {
+      // 题库为空：清空旧卡（新的一局不应残留上一局的卡）
+      room.players.forEach((p) => (p.card = null));
+      return room.players.length;
+    }
     const shuffled = shuffle(pool);
     const draws: { gameId: number; roundNo: number; playerName: string; cardText: string; category: string }[] = [];
+    let missing = 0;
     room.players.forEach((p, i) => {
-      // 若“一晚限一次”卡被抽到，自动跳过换下一张（在洗好的队列里向后找）
-      let idx = i % shuffled.length;
-      let card = shuffled[idx];
-      let guard = 0;
-      while (card.once && room.usedOnceCardIds.includes(card.id) && guard < shuffled.length * 2) {
-        idx = (idx + 1) % shuffled.length;
-        card = shuffled[idx];
-        guard++;
+      const card = shuffled[i];
+      if (!card) {
+        // 池小于人数：后面的玩家本轮无卡（前端展示「暂无」，杜绝两人同卡）
+        p.card = null;
+        missing++;
+        return;
       }
       p.card = { cardId: card.id, text: card.text, category: card.category, revealed: false };
       if (card.once && !room.usedOnceCardIds.includes(card.id)) room.usedOnceCardIds.push(card.id);
@@ -360,6 +386,7 @@ export class RoomManager {
     });
     // 整局发牌一次性入账（单事务），避免逐条 autocommit 各刷一次盘
     if (draws.length) dbi.addConditionDraws(draws);
+    return missing;
   }
 
   // ---------- 连接处理 ----------
@@ -443,12 +470,12 @@ export class RoomManager {
         const existing = room.players.find((p) => p.uid === user.uid);
         if (existing) {
           existing.name = user.name;
-          existing.token = randomUUID();
           existing.sessionToken = sessionToken;
           existing.connected = true;
           socket.data.playerId = existing.id;
           socket.data.code = code;
           socket.join(code);
+          // 不轮换 token：多标签页共用同一房间凭证，避免先加入标签的 rejoin 会话失效
           ack?.({ ok: true, code, playerId: existing.id, token: existing.token, rebound: true });
           this.broadcastRoom(room);
           return;
@@ -458,12 +485,12 @@ export class RoomManager {
           const existingSpec = room.spectators.find((s) => s.uid === user.uid);
           if (existingSpec) {
             existingSpec.name = user.name;
-            existingSpec.token = randomUUID();
             existingSpec.sessionToken = sessionToken;
             existingSpec.connected = true;
             socket.data.spectatorId = existingSpec.id;
             socket.data.code = code;
             socket.join(code);
+            // 同上：观战回合同样不轮换 token，多标签共用凭证
             ack?.({
               ok: true,
               code,
@@ -564,9 +591,9 @@ export class RoomManager {
         return;
       }
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
-      // 战局进行中离开：分数与最终名单照常归档
+      // 战局进行中离开：分数与最终名单照常归档（pid 供撤销时回滚归档分数）
       if (room.status === 'playing') {
-        room.leftPlayers.push({ name: player.name, seat: player.seat, score: player.score, uid: player.uid ?? null });
+        room.leftPlayers.push({ name: player.name, seat: player.seat, score: player.score, uid: player.uid ?? null, pid: player.id });
       }
       this.removePlayer(room, player.id, 'left');
       socket.leave(room.code);
@@ -624,6 +651,8 @@ export class RoomManager {
       const { room, player } = this.ctx(socket);
       if (!room || !player) return ack?.({ ok: false, error: '不在房间中' });
       if (room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可开局' });
+      // 重复开局会另建 gameId，旧战局永不结算成僵尸行（污染大盘 gamesLive 统计）
+      if (room.status === 'playing') return ack?.({ ok: false, error: '战局已在进行中，请勿重复开局' });
       if (room.players.length < 2) return ack?.({ ok: false, error: '至少需要 2 名玩家' });
       room.status = 'playing';
       room.roundNo = 1;
@@ -631,8 +660,8 @@ export class RoomManager {
       room.entries = [];
       room.usedOnceCardIds = [];
       room.players.forEach((p) => (p.card = null));
-      this.deal(room);
-      ack?.({ ok: true });
+      const missing = this.deal(room);
+      ack?.({ ok: true, missing });
       this.broadcastRoom(room);
     });
 
@@ -640,8 +669,8 @@ export class RoomManager {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       room.roundNo += 1;
-      this.deal(room);
-      ack?.({ ok: true });
+      const missing = this.deal(room);
+      ack?.({ ok: true, missing });
       this.broadcastRoom(room);
     });
 
@@ -657,8 +686,8 @@ export class RoomManager {
       const { room, player } = this.ctx(socket);
       if (!room || !player || room.hostId !== player.id) return ack?.({ ok: false, error: '仅房主可操作' });
       if (!room.features.cards) return ack?.({ ok: false, error: '本局未启用条件卡' });
-      this.deal(room);
-      ack?.({ ok: true });
+      const missing = this.deal(room);
+      ack?.({ ok: true, missing });
       this.broadcastRoom(room);
     });
 
@@ -757,12 +786,20 @@ export class RoomManager {
       const parties = Array.from(new Set([entry.createdBy, entry.toId]));
 
       const executeUndo = () => {
-        entry.payerIds.forEach((pid, i) => {
+        // 回滚分数：在场玩家直接改；已离场玩家同步回滚 leftPlayers 归档，保证总分守恒
+        // （否则收款方被扣回而离场付款方的退款落空，凭空蒸发）
+        const rollback = (pid: string, name: string, amount: number, sign: 1 | -1) => {
           const p = room.players.find((x) => x.id === pid);
-          if (p) p.score += entry.payers[i]?.amount ?? 0;
-        });
-        const to = room.players.find((x) => x.id === entry.toId);
-        if (to) to.score -= entry.amountTotal;
+          if (p) {
+            p.score += sign * amount;
+            return;
+          }
+          // pid 为空（旧快照）时按昵称回退匹配
+          const lp = room.leftPlayers.find((x) => x.pid === pid) ?? room.leftPlayers.find((x) => x.name === name);
+          if (lp) lp.score += sign * amount;
+        };
+        entry.payerIds.forEach((pid, i) => rollback(pid, entry.payers[i]?.name ?? '', entry.payers[i]?.amount ?? 0, 1));
+        rollback(entry.toId, entry.toName, entry.amountTotal, -1);
         entry.undone = true;
         entry.undoneAt = Date.now();
         entry.undo = null;
@@ -897,13 +934,25 @@ export class RoomManager {
     on('disconnect', () => {
       const { room, player, spectator } = this.ctx(socket);
       if (!room) return;
+      // 多标签页：同一玩家/观战者还有其他连接在房间时保持在线，只有最后一个连接断开才标记离线
+      const hasSibling = (key: 'playerId' | 'spectatorId', id: string | undefined): boolean => {
+        if (id === undefined) return false;
+        const sockets = this.io.sockets.adapter.rooms.get(room.code);
+        if (!sockets) return false;
+        for (const sid of sockets) {
+          if (sid === socket.id) continue;
+          const s = this.io.sockets.sockets.get(sid);
+          if (s && s.data[key] === id) return true;
+        }
+        return false;
+      };
       if (player) {
-        player.connected = false;
+        if (!hasSibling('playerId', player.id)) player.connected = false;
         this.broadcastRoom(room);
         return;
       }
       if (spectator) {
-        spectator.connected = false;
+        if (!hasSibling('spectatorId', spectator.id)) spectator.connected = false;
         this.broadcastRoom(room);
       }
     });
