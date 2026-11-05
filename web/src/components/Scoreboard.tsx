@@ -1,5 +1,6 @@
-import type { Snapshot } from '../types';
-import { Avatar, scoreColor } from './common';
+import type { Snapshot } from '../types'
+import { Avatar, scoreColor } from './common'
+import { IconCrown, IconTile } from './icons'
 
 export function Scoreboard({
   snap,
@@ -7,12 +8,12 @@ export function Scoreboard({
   vertical,
   showScore = true,
 }: {
-  snap: Snapshot;
-  myId: string | null;
-  vertical?: boolean;
-  showScore?: boolean;
+  snap: Snapshot
+  myId: string | null
+  vertical?: boolean
+  showScore?: boolean
 }) {
-  const topScore = Math.max(...snap.players.map((p) => p.score), 0);
+  const topScore = Math.max(...snap.players.map((p) => p.score), 0)
 
   if (vertical) {
     return (
@@ -21,7 +22,7 @@ export function Scoreboard({
           <PlayerTile key={p.id} p={p} myId={myId} topScore={topScore} big showScore={showScore} />
         ))}
       </div>
-    );
+    )
   }
   return (
     <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:hidden xl:grid-cols-2">
@@ -29,12 +30,20 @@ export function Scoreboard({
         <PlayerTile key={p.id} p={p} myId={myId} topScore={topScore} showScore={showScore} />
       ))}
     </div>
-  );
+  )
 }
 
-export function PlayerStrip({ snap, myId, showScore = true }: { snap: Snapshot; myId: string | null; showScore?: boolean }) {
+export function PlayerStrip({
+  snap,
+  myId,
+  showScore = true,
+}: {
+  snap: Snapshot
+  myId: string | null
+  showScore?: boolean
+}) {
   // 手机端吸顶横滑条
-  const topScore = Math.max(...snap.players.map((p) => p.score), 0);
+  const topScore = Math.max(...snap.players.map((p) => p.score), 0)
   return (
     <div className="flex gap-2 overflow-x-auto px-4 pb-1 lg:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {snap.players.map((p) => (
@@ -53,12 +62,12 @@ export function PlayerStrip({ snap, myId, showScore = true }: { snap: Snapshot; 
             </span>
           )}
           {showScore && p.score === topScore && snap.players.length > 1 && p.score !== 0 && (
-            <span className="text-[10px]">👑</span>
+            <IconCrown size={13} className="text-gold" />
           )}
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 function PlayerTile({
@@ -68,13 +77,13 @@ function PlayerTile({
   big,
   showScore = true,
 }: {
-  p: Snapshot['players'][number];
-  myId: string | null;
-  topScore: number;
-  big?: boolean;
-  showScore?: boolean;
+  p: Snapshot['players'][number]
+  myId: string | null
+  topScore: number
+  big?: boolean
+  showScore?: boolean
 }) {
-  const isTop = showScore && p.score === topScore && p.score !== 0;
+  const isTop = showScore && p.score === topScore && p.score !== 0
   return (
     <div
       className={`relative rounded-2xl border p-3 transition ${
@@ -91,7 +100,19 @@ function PlayerTile({
             {!p.connected && <span className="shrink-0 text-[9px] text-white/40">离线</span>}
           </div>
           <div className="mt-0.5 flex items-center gap-1 text-[10px] text-white/45">
-            {p.hasCard ? (p.cardRevealed ? '🀄 已亮牌' : '🀫 有条件卡') : cardsOffHint()}
+            {p.hasCard ? (
+              p.cardRevealed ? (
+                <>
+                  <IconTile size={11} className="text-emerald-300/80" /> 已亮牌
+                </>
+              ) : (
+                <>
+                  <IconTile size={11} className="text-white/40" /> 有条件卡
+                </>
+              )
+            ) : (
+              cardsOffHint()
+            )}
           </div>
         </div>
         {showScore && (
@@ -100,14 +121,18 @@ function PlayerTile({
               {p.score > 0 ? '+' : ''}
               {p.score}
             </div>
-            {isTop && <div className="mt-0.5 text-[9px] font-bold text-gold-grad">领先 👑</div>}
+            {isTop && (
+              <div className="mt-0.5 flex items-center justify-end gap-0.5 text-[9px] font-bold text-gold">
+                领先 <IconCrown size={11} />
+              </div>
+            )}
           </div>
         )}
       </div>
     </div>
-  );
+  )
 }
 
 function cardsOffHint(): string {
-  return '·';
+  return '·'
 }

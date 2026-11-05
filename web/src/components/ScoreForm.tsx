@@ -1,41 +1,42 @@
-import { useState } from 'react';
-import type { PlayerView, Snapshot } from '../types';
-import { emitAck } from '../socket';
-import { useApp } from '../App';
-import { SeatBadge } from './common';
+import { useState } from 'react'
+import type { PlayerView, Snapshot } from '../types'
+import { emitAck } from '../socket'
+import { useApp } from '../App'
+import { SeatBadge } from './common'
+import { IconCoin, IconPen } from './icons'
 
-const QUICK = [5, 10, 20, 50, 100];
+const QUICK = [5, 10, 20, 50, 100]
 
 export function ScoreForm({ snap, me }: { snap: Snapshot; me: PlayerView }) {
-  const { toast } = useApp();
-  const [toId, setToId] = useState<string | null>(null);
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
+  const { toast } = useApp()
+  const [toId, setToId] = useState<string | null>(null)
+  const [amount, setAmount] = useState('')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
 
-  const others = snap.players.filter((p) => p.id !== me.id);
+  const others = snap.players.filter((p) => p.id !== me.id)
 
   const submit = async () => {
-    const total = parseInt(amount, 10);
-    if (!toId) return toast('选择给谁', 'error');
-    if (!Number.isInteger(total) || total <= 0) return toast('分数需为正整数', 'error');
-    setBusy(true);
+    const total = parseInt(amount, 10)
+    if (!toId) return toast('选择给谁', 'error')
+    if (!Number.isInteger(total) || total <= 0) return toast('分数需为正整数', 'error')
+    setBusy(true)
     try {
-      await emitAck('score:add', { toId, amountTotal: total, note: note.trim() });
-      setAmount('');
-      setNote('');
-      toast('✓ 记账成功', 'success');
+      await emitAck('score:add', { toId, amountTotal: total, note: note.trim() })
+      setAmount('')
+      setNote('')
+      toast('✓ 记账成功', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   return (
     <div className="panel p-4">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-white/85">
-        <span>✍️</span> 记一笔
+        <IconPen size={16} className="text-gold" /> 记一笔
       </h3>
 
       <p className="mb-1.5 text-xs font-semibold text-white/55">谁付钱？</p>
@@ -45,7 +46,7 @@ export function ScoreForm({ snap, me }: { snap: Snapshot; me: PlayerView }) {
           {me.name}（我）
         </span>
       </div>
-      <p className="mt-1.5 text-[10px] text-white/35">只能从自己的分数给出 · 收入由对方自己记</p>
+      <p className="mt-1.5 text-[10px] text-white/35">只能从自己的分数给出（可为负，先赊后赢） · 收入由对方自己记</p>
 
       <p className="mb-1.5 mt-4 text-xs font-semibold text-white/55">给谁？</p>
       <div className="flex flex-wrap gap-2">
@@ -100,9 +101,10 @@ export function ScoreForm({ snap, me }: { snap: Snapshot; me: PlayerView }) {
         onKeyDown={(e) => e.key === 'Enter' && submit()}
       />
 
-      <button className="btn-primary mt-4 w-full" disabled={busy} onClick={submit}>
-        {busy ? '记录中…' : '💰 确认记账'}
+      <button className="btn-primary mt-4 w-full gap-2" disabled={busy} onClick={submit}>
+        <IconCoin size={17} />
+        {busy ? '记录中…' : '确认记账'}
       </button>
     </div>
-  );
+  )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react'
 import {
   adminApi,
   api,
@@ -6,125 +6,138 @@ import {
   setAdminToken,
   type AdminOverview,
   type AdminUserRow,
-} from '../socket';
-import { useApp } from '../App';
-import { ConfirmButton, fmtRel, scoreColor } from '../components/common';
-import { Footer } from '../components/Footer';
+} from '../socket'
+import { useApp } from '../App'
+import { ConfirmButton, fmtRel, scoreColor } from '../components/common'
+import { Footer } from '../components/Footer'
+import {
+  IconChart,
+  IconCoin,
+  IconDice,
+  IconFlag,
+  IconGear,
+  IconLock,
+  IconRefresh,
+  IconTile,
+  IconTileBack,
+  IconTrophy,
+  IconUsers,
+} from '../components/icons'
 
 export default function Admin() {
-  const { back, toast } = useApp();
-  const [authed, setAuthed] = useState(false);
-  const [tokenInput, setTokenInput] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [ov, setOv] = useState<AdminOverview | null>(null);
-  const [users, setUsers] = useState<AdminUserRow[] | null>(null);
-  const [query, setQuery] = useState('');
-  const [editing, setEditing] = useState<{ uid: string; name: string } | null>(null);
-  const [pwEdit, setPwEdit] = useState<{ uid: string; pw: string } | null>(null);
-  const [footer, setFooter] = useState<{ github: string; text: string }>({ github: '', text: '' });
-  const [busy, setBusy] = useState(false);
+  const { back, toast } = useApp()
+  const [authed, setAuthed] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [ov, setOv] = useState<AdminOverview | null>(null)
+  const [users, setUsers] = useState<AdminUserRow[] | null>(null)
+  const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState<{ uid: string; name: string } | null>(null)
+  const [pwEdit, setPwEdit] = useState<{ uid: string; pw: string } | null>(null)
+  const [footer, setFooter] = useState<{ github: string; text: string }>({ github: '', text: '' })
+  const [busy, setBusy] = useState(false)
 
   const load = useCallback(async (q: string) => {
-    const [o, u, s] = await Promise.all([adminApi.overview(), adminApi.users(q), api.settings()]);
-    setOv(o);
-    setUsers(u.items);
-    setFooter(s);
-  }, []);
+    const [o, u, s] = await Promise.all([adminApi.overview(), adminApi.users(q), api.settings()])
+    setOv(o)
+    setUsers(u.items)
+    setFooter(s)
+  }, [])
 
   // 有存档口令时自动尝试登录
   useEffect(() => {
-    if (!getAdminToken()) return;
+    if (!getAdminToken()) return
     load('')
       .then(() => setAuthed(true))
-      .catch(() => setAuthed(false));
-  }, [load]);
+      .catch(() => setAuthed(false))
+  }, [load])
 
   // 搜索防抖自动刷新
   useEffect(() => {
-    if (!authed) return;
+    if (!authed) return
     const t = setTimeout(() => {
       adminApi
         .users(query.trim())
         .then((u) => setUsers(u.items))
-        .catch(() => {});
-    }, 350);
-    return () => clearTimeout(t);
-  }, [query, authed]);
+        .catch(() => {})
+    }, 350)
+    return () => clearTimeout(t)
+  }, [query, authed])
 
   const login = async () => {
-    setAdminToken(tokenInput.trim());
-    setAuthError('');
+    setAdminToken(tokenInput.trim())
+    setAuthError('')
     try {
-      await load('');
-      setAuthed(true);
+      await load('')
+      setAuthed(true)
     } catch (e) {
-      setAuthed(false);
-      setAuthError((e as Error).message);
+      setAuthed(false)
+      setAuthError((e as Error).message)
     }
-  };
+  }
 
   const refresh = async () => {
     try {
-      await load(query.trim());
+      await load(query.trim())
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
 
   const rename = async (uid: string, name: string) => {
-    if (!name.trim()) return toast('昵称不能为空', 'error');
-    setBusy(true);
+    if (!name.trim()) return toast('昵称不能为空', 'error')
+    setBusy(true)
     try {
-      await adminApi.renameUser(uid, name.trim());
-      setEditing(null);
-      await refresh();
-      toast('✓ 已改名', 'success');
+      await adminApi.renameUser(uid, name.trim())
+      setEditing(null)
+      await refresh()
+      toast('✓ 已改名', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   const remove = async (uid: string) => {
-    setBusy(true);
+    setBusy(true)
     try {
-      await adminApi.deleteUser(uid);
-      await refresh();
-      toast('已删除用户（历史战绩保留）', 'success');
+      await adminApi.deleteUser(uid)
+      await refresh()
+      toast('已删除用户（历史战绩保留）', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   const resetPw = async (uid: string, pw: string) => {
-    if (pw.length < 4) return toast('新密码至少 4 位', 'error');
-    setBusy(true);
+    if (pw.length < 4) return toast('新密码至少 4 位', 'error')
+    setBusy(true)
     try {
-      await adminApi.resetPassword(uid, pw);
-      setPwEdit(null);
-      toast('✓ 密码已重置，请告知该用户', 'success');
+      await adminApi.resetPassword(uid, pw)
+      setPwEdit(null)
+      toast('✓ 密码已重置，请告知该用户', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   const saveFooter = async () => {
-    setBusy(true);
+    setBusy(true)
     try {
-      const r = await adminApi.setFooter(footer.github.trim(), footer.text.trim());
-      setFooter(r.settings);
-      toast('✓ 页脚已更新', 'success');
+      const r = await adminApi.setFooter(footer.github.trim(), footer.text.trim())
+      setFooter(r.settings)
+      toast('✓ 页脚已更新', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   return (
     <div className="flex flex-1 flex-col px-4 pb-10 pt-5">
@@ -132,17 +145,26 @@ export default function Admin() {
         <button className="btn-ghost !min-h-[38px] !px-3" onClick={back}>
           ←
         </button>
-        <h1 className="text-lg font-black">⚙️ 管理后台</h1>
+        <h1 className="flex items-center gap-2 text-lg font-black">
+          <IconGear size={18} className="text-gold" /> 管理后台
+        </h1>
         {authed && (
-          <button className="btn-ghost ml-auto !min-h-[36px] !px-3 text-xs" onClick={refresh}>
-            🔄 刷新
+          <button
+            className="btn-ghost ml-auto gap-1.5 !min-h-[36px] !px-3 text-xs"
+            onClick={refresh}
+          >
+            <IconRefresh size={13} /> 刷新
           </button>
         )}
       </div>
 
       {!authed ? (
         <div className="panel mx-auto w-full max-w-sm p-6">
-          <div className="mb-1 text-center text-3xl">🔐</div>
+          <div className="mb-3 flex justify-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/15 bg-black/30">
+              <IconLock size={26} className="text-white/50" />
+            </span>
+          </div>
           <h2 className="text-center text-base font-bold">管理口令</h2>
           <p className="mt-1 text-center text-xs text-white/40">
             服务端环境变量 ADMIN_TOKEN（开发默认 admin123）
@@ -167,15 +189,47 @@ export default function Admin() {
           {/* 数据大盘 */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
             {[
-              { label: '注册用户', value: ov.users, icon: '👥', tint: 'from-sky-500/25 to-transparent' },
-              { label: '完整战局', value: ov.gamesFinished, icon: '🏁', tint: 'from-emerald-500/25 to-transparent' },
-              { label: '进行中战局', value: ov.gamesLive, icon: '🎲', tint: 'from-amber-500/25 to-transparent' },
-              { label: '存活房间', value: ov.liveRooms, icon: '🏠', tint: 'from-violet-500/25 to-transparent' },
-              { label: '记账笔数', value: ov.entries, icon: '💰', tint: 'from-rose-500/25 to-transparent' },
-              { label: '条件卡记录', value: ov.draws, icon: '🀫', tint: 'from-teal-500/25 to-transparent' },
+              {
+                label: '注册用户',
+                value: ov.users,
+                icon: IconUsers,
+                tint: 'from-sky-500/25 to-transparent',
+              },
+              {
+                label: '完整战局',
+                value: ov.gamesFinished,
+                icon: IconFlag,
+                tint: 'from-emerald-500/25 to-transparent',
+              },
+              {
+                label: '进行中战局',
+                value: ov.gamesLive,
+                icon: IconDice,
+                tint: 'from-amber-500/25 to-transparent',
+              },
+              {
+                label: '存活房间',
+                value: ov.liveRooms,
+                icon: IconTile,
+                tint: 'from-violet-500/25 to-transparent',
+              },
+              {
+                label: '记账笔数',
+                value: ov.entries,
+                icon: IconCoin,
+                tint: 'from-rose-500/25 to-transparent',
+              },
+              {
+                label: '条件卡记录',
+                value: ov.draws,
+                icon: IconTileBack,
+                tint: 'from-teal-500/25 to-transparent',
+              },
             ].map((c) => (
               <div key={c.label} className={`panel bg-gradient-to-br p-3.5 text-center ${c.tint}`}>
-                <div className="text-lg">{c.icon}</div>
+                <div className="flex justify-center text-white/75">
+                  <c.icon size={20} />
+                </div>
                 <div className="mt-1 text-2xl font-black text-gold">{c.value}</div>
                 <div className="mt-0.5 text-[11px] text-white/50">{c.label}</div>
               </div>
@@ -185,12 +239,17 @@ export default function Admin() {
           <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
             {/* 近 7 日战局 */}
             <div className="panel p-4">
-              <h2 className="mb-3 text-sm font-bold text-white/85">📈 近 7 日完整战局</h2>
+              <h2 className="mb-3 flex items-center gap-1.5 text-sm font-bold text-white/85">
+                <IconChart size={16} className="text-gold" /> 近 7 日完整战局
+              </h2>
               <div className="flex h-36 items-end gap-2">
                 {ov.daily.map((d) => {
-                  const max = Math.max(...ov.daily.map((x) => x.count), 1);
+                  const max = Math.max(...ov.daily.map((x) => x.count), 1)
                   return (
-                    <div key={d.date} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1 self-stretch">
+                    <div
+                      key={d.date}
+                      className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1 self-stretch"
+                    >
                       <span className="text-[11px] font-bold text-white/70">{d.count || ''}</span>
                       <div
                         className="w-full rounded-t-lg bg-gradient-to-t from-felt-700 to-emerald-400/80 transition-all"
@@ -199,14 +258,16 @@ export default function Admin() {
                       />
                       <span className="text-[10px] text-white/40">{d.date.slice(5)}</span>
                     </div>
-                  );
+                  )
                 })}
               </div>
             </div>
 
             {/* 玩家榜 */}
             <div className="panel p-4">
-              <h2 className="mb-2 text-sm font-bold text-white/85">🏆 玩家盈亏榜</h2>
+              <h2 className="mb-2 flex items-center gap-1.5 text-sm font-bold text-white/85">
+                <IconTrophy size={16} className="text-gold" /> 玩家盈亏榜
+              </h2>
               {ov.top.length === 0 ? (
                 <p className="py-6 text-center text-xs text-white/40">暂无数据</p>
               ) : (
@@ -230,7 +291,9 @@ export default function Admin() {
           {/* 用户管理 */}
           <div className="panel p-4">
             <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <h2 className="text-sm font-bold text-white/85">👥 用户管理</h2>
+              <h2 className="flex items-center gap-1.5 text-sm font-bold text-white/85">
+                <IconUsers size={15} className="text-gold" /> 用户管理
+              </h2>
               <div className="flex gap-2 sm:ml-auto sm:w-72">
                 <input
                   className="input !min-h-[40px] min-w-0 flex-1 text-sm"
@@ -285,7 +348,9 @@ export default function Admin() {
                                 {u.username}
                               </span>
                             )}
-                            <span className="ml-2 font-mono text-[10px] text-white/30">{u.uid.slice(0, 8)}</span>
+                            <span className="ml-2 font-mono text-[10px] text-white/30">
+                              {u.uid.slice(0, 8)}
+                            </span>
                           </>
                         )}
                         <div className="mt-0.5 text-[10px] text-white/40">
@@ -309,7 +374,9 @@ export default function Admin() {
                         </button>
                         <button
                           className="min-h-[36px] rounded-lg border border-white/15 px-3 text-[11px] font-semibold text-amber-200 hover:bg-white/10"
-                          onClick={() => setPwEdit(pwEdit?.uid === u.uid ? null : { uid: u.uid, pw: '' })}
+                          onClick={() =>
+                            setPwEdit(pwEdit?.uid === u.uid ? null : { uid: u.uid, pw: '' })
+                          }
                         >
                           重置密码
                         </button>
@@ -362,10 +429,14 @@ export default function Admin() {
           {/* 页脚设置 */}
           <div className="panel p-4">
             <h2 className="mb-1 text-sm font-bold text-white/85">🦶 页脚设置</h2>
-            <p className="mb-3 text-[11px] text-white/40">显示在首页等页面底部，留空则隐藏对应项。</p>
+            <p className="mb-3 text-[11px] text-white/40">
+              显示在首页等页面底部，留空则隐藏对应项。
+            </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label className="mb-1.5 block text-xs font-semibold text-white/55">GitHub 链接</label>
+                <label className="mb-1.5 block text-xs font-semibold text-white/55">
+                  GitHub 链接
+                </label>
                 <input
                   className="input text-sm"
                   placeholder="https://github.com/your/repo"
@@ -392,7 +463,7 @@ export default function Admin() {
               <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs">
                 {footer.github && <span className="font-semibold text-white/60">🐙 GitHub</span>}
                 {footer.text && <span className="text-white/45">{footer.text}</span>}
-                <span className="text-white/30">⚙️ 管理后台</span>
+                <span className="text-white/30">管理后台</span>
               </div>
             </div>
           </div>
@@ -400,5 +471,5 @@ export default function Admin() {
       )}
       <Footer />
     </div>
-  );
+  )
 }

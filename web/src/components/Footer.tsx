@@ -1,19 +1,23 @@
-import { useEffect, useState } from 'react';
-import { api, getAdminToken } from '../socket';
-import { useApp } from '../App';
+import { useEffect, useState } from 'react'
+import { api, getAdminToken } from '../socket'
+import { useApp } from '../App'
+import { IconGear } from './icons'
 
 /** 页脚：内容在管理后台「页脚设置」中定义 */
 export function Footer() {
-  const { go } = useApp();
-  const [cfg, setCfg] = useState<{ github: string; text: string } | null>(null);
+  const { go } = useApp()
+  const [cfg, setCfg] = useState<{ github: string; text: string } | null>(null)
   // 管理入口不对普通用户暴露：仅本机已保存管理口令（登录过后台）时显示
-  const [showAdmin, setShowAdmin] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false)
   useEffect(() => {
-    api.settings().then(setCfg).catch(() => {});
-    setShowAdmin(!!getAdminToken());
-  }, []);
-  const hasContent = !!cfg && (!!cfg.github || !!cfg.text);
-  if (!cfg) return null;
+    api
+      .settings()
+      .then(setCfg)
+      .catch(() => {})
+    setShowAdmin(!!getAdminToken())
+  }, [])
+  const hasContent = !!cfg && (!!cfg.github || !!cfg.text)
+  if (!cfg) return null
   return (
     <footer className="mt-10 border-t border-white/10 pb-8 pt-5 text-center">
       <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs">
@@ -32,13 +36,16 @@ export function Footer() {
         )}
         {cfg.text && <span className="text-white/45">{cfg.text}</span>}
         {showAdmin && (
-          <button className="font-semibold text-white/40 hover:text-white/70" onClick={() => go({ name: 'admin' })}>
-            ⚙️ 管理后台
+          <button
+            className="inline-flex items-center gap-1 font-semibold text-white/40 hover:text-white/70"
+            onClick={() => go({ name: 'admin' })}
+          >
+            <IconGear size={12} /> 管理后台
           </button>
         )}
       </div>
       {hasContent && <div className="mx-auto mt-2 h-px w-24 bg-white/10" />}
       <p className="mt-2 text-[11px] text-white/25">雀记 · 麻将记分与整蛊条件卡</p>
     </footer>
-  );
+  )
 }

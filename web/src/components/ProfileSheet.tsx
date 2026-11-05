@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { api, type MeInfo } from '../socket';
-import { useApp } from '../App';
-import { Sheet } from './common';
+import { useState } from 'react'
+import { api, type MeInfo } from '../socket'
+import { useApp } from '../App'
+import { Sheet } from './common'
+import { IconIdCard } from './icons'
 
 /** 登录后自助修改昵称与密码（需已知当前密码） */
 export function ProfileSheet({
@@ -10,56 +11,69 @@ export function ProfileSheet({
   me,
   onUpdated,
 }: {
-  open: boolean;
-  onClose: () => void;
-  me: MeInfo;
-  onUpdated: () => void;
+  open: boolean
+  onClose: () => void
+  me: MeInfo
+  onUpdated: () => void
 }) {
-  const { toast } = useApp();
-  const [name, setName] = useState(me.name);
-  const [oldPw, setOldPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [newPw2, setNewPw2] = useState('');
-  const [busy, setBusy] = useState(false);
+  const { toast } = useApp()
+  const [name, setName] = useState(me.name)
+  const [oldPw, setOldPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [newPw2, setNewPw2] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const saveName = async () => {
-    if (!name.trim() || name.trim() === me.name) return;
-    setBusy(true);
+    if (!name.trim() || name.trim() === me.name) return
+    setBusy(true)
     try {
-      await api.changeName(name.trim());
-      toast('✓ 昵称已更新', 'success');
-      onUpdated();
+      const r = await api.changeName(name.trim())
+      toast(r.warn ? `✓ 昵称已更新（${r.warn}）` : '✓ 昵称已更新', 'success')
+      onUpdated()
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   const savePw = async () => {
-    if (newPw !== newPw2) return toast('两次输入的新密码不一致', 'error');
-    setBusy(true);
+    if (newPw !== newPw2) return toast('两次输入的新密码不一致', 'error')
+    setBusy(true)
     try {
-      await api.changePassword(oldPw, newPw);
-      setOldPw('');
-      setNewPw('');
-      setNewPw2('');
-      toast('✓ 密码已修改', 'success');
+      await api.changePassword(oldPw, newPw)
+      setOldPw('')
+      setNewPw('')
+      setNewPw2('')
+      toast('✓ 密码已修改', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   return (
-    <Sheet open={open} onClose={onClose} title="🪪 账号设置">
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={
+        <>
+          <IconIdCard size={17} className="text-gold" /> 账号设置
+        </>
+      }
+    >
       <div className="space-y-5">
         <div>
           <p className="mb-2 text-xs font-semibold text-white/55">
-            登录名 <span className="font-normal text-white/35">（不可修改）：{me.username ?? me.name}</span>
+            登录名{' '}
+            <span className="font-normal text-white/35">
+              （不可修改）：{me.username ?? me.name}
+            </span>
           </p>
-          <label className="mb-1.5 block text-xs font-semibold text-white/55">昵称（牌桌显示名）</label>
+          <label className="mb-1.5 block text-xs font-semibold text-white/55">
+            昵称（牌桌显示名）
+          </label>
           <div className="flex gap-2">
             <input
               className="input flex-1"
@@ -74,7 +88,9 @@ export function ProfileSheet({
         </div>
 
         <div className="border-t border-white/10 pt-4">
-          <label className="mb-2 block text-xs font-semibold text-white/55">修改密码（需验证当前密码）</label>
+          <label className="mb-2 block text-xs font-semibold text-white/55">
+            修改密码（需验证当前密码）
+          </label>
           <input
             className="input mb-2"
             type="password"
@@ -99,12 +115,16 @@ export function ProfileSheet({
             value={newPw2}
             onChange={(e) => setNewPw2(e.target.value)}
           />
-          <button className="btn-primary w-full" disabled={busy || !oldPw || !newPw} onClick={savePw}>
+          <button
+            className="btn-primary w-full"
+            disabled={busy || !oldPw || !newPw}
+            onClick={savePw}
+          >
             确认修改密码
           </button>
           <p className="mt-2 text-[11px] text-white/35">忘记当前密码？请联系管理员在后台重置。</p>
         </div>
       </div>
     </Sheet>
-  );
+  )
 }

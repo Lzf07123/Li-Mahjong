@@ -1,58 +1,76 @@
-import { useEffect, useState } from 'react';
-import type { LibraryData, Snapshot } from '../types';
-import { api, emitAck } from '../socket';
-import { useApp } from '../App';
-import { Sheet } from './common';
+import { useEffect, useState } from 'react'
+import type { LibraryData, Snapshot } from '../types'
+import { api, emitAck } from '../socket'
+import { useApp } from '../App'
+import { CATEGORY_META, Sheet } from './common'
+import { IconBooks, IconPen } from './icons'
 
-export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: () => void; snap: Snapshot }) {
-  const { toast } = useApp();
-  const [data, setData] = useState<LibraryData | null>(null);
-  const [newText, setNewText] = useState('');
-  const [newCat, setNewCat] = useState('global');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState('');
+export function LibrarySheet({
+  open,
+  onClose,
+  snap,
+}: {
+  open: boolean
+  onClose: () => void
+  snap: Snapshot
+}) {
+  const { toast } = useApp()
+  const [data, setData] = useState<LibraryData | null>(null)
+  const [newText, setNewText] = useState('')
+  const [newCat, setNewCat] = useState('global')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
 
   useEffect(() => {
     if (open) {
       api
         .library()
         .then(setData)
-        .catch((e) => toast((e as Error).message, 'error'));
+        .catch((e) => toast((e as Error).message, 'error'))
     }
-  }, [open, toast]);
+  }, [open, toast])
 
-  const disabledCats = new Set(snap.disabledCategoryIds);
-  const disabledCards = new Set(snap.disabledCardIds);
+  const disabledCats = new Set(snap.disabledCategoryIds)
+  const disabledCards = new Set(snap.disabledCardIds)
 
   const persist = async (patch: { disabledCardIds?: string[]; disabledCategoryIds?: string[] }) => {
     try {
       await emitAck('library:setEnabled', {
         disabledCardIds: patch.disabledCardIds ?? [...disabledCards],
         disabledCategoryIds: patch.disabledCategoryIds ?? [...disabledCats],
-      });
+      })
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
 
   const toggleCategory = (id: string) => {
-    const next = new Set(disabledCats);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    persist({ disabledCategoryIds: [...next] });
-  };
+    const next = new Set(disabledCats)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    persist({ disabledCategoryIds: [...next] })
+  }
 
   const toggleCard = (id: string) => {
-    const next = new Set(disabledCards);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    persist({ disabledCardIds: [...next] });
-  };
+    const next = new Set(disabledCards)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    persist({ disabledCardIds: [...next] })
+  }
 
-  if (!open) return null;
+  if (!open) return null
 
   return (
-    <Sheet open={open} onClose={onClose} title="📚 题库管理" wide>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      wide
+      title={
+        <>
+          <IconBooks size={17} className="text-gold" /> 题库管理
+        </>
+      }
+    >
       {!data ? (
         <p className="py-10 text-center text-sm text-white/40">加载中…</p>
       ) : (
@@ -62,9 +80,10 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
           </p>
 
           {data.categories.map((cat) => {
-            const cards = data.builtin.filter((c) => c.category === cat.id);
-            if (cards.length === 0) return null;
-            const catOff = disabledCats.has(cat.id);
+            const cards = data.builtin.filter((c) => c.category === cat.id)
+            if (cards.length === 0) return null
+            const catOff = disabledCats.has(cat.id)
+            const CatIcon = CATEGORY_META[cat.id as keyof typeof CATEGORY_META]?.icon
             return (
               <div key={cat.id} className="overflow-hidden rounded-xl border border-white/10">
                 <button
@@ -73,7 +92,13 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                     catOff ? 'bg-black/40 opacity-60' : 'bg-felt-700/40 hover:bg-felt-700/60'
                   }`}
                 >
-                  <span className="text-lg">{cat.emoji}</span>
+                  {CatIcon ? (
+                    <span className="text-gold/90">
+                      <CatIcon size={17} />
+                    </span>
+                  ) : (
+                    <span className="text-lg">{cat.emoji}</span>
+                  )}
                   <b className="flex-1 text-sm">{cat.name}</b>
                   <span className="text-[10px] text-white/45">{cards.length} 张</span>
                   <span
@@ -87,23 +112,28 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                 {!catOff && (
                   <div className="divide-y divide-white/5 bg-black/20">
                     {cards.map((c) => {
-                      const off = disabledCards.has(c.id);
+                      const off = disabledCards.has(c.id)
                       return (
-                        <div key={c.id} className={`flex items-start gap-2 px-3 py-2 ${off ? 'opacity-45' : ''}`}>
+                        <div
+                          key={c.id}
+                          className={`flex items-start gap-2 px-3 py-2 ${off ? 'opacity-45' : ''}`}
+                        >
                           <p className="flex-1 text-[13px] leading-snug text-white/85">{c.text}</p>
                           <Switch on={!off} onChange={() => toggleCard(c.id)} />
                         </div>
-                      );
+                      )
                     })}
                   </div>
                 )}
               </div>
-            );
+            )
           })}
 
           {/* 自定义 */}
           <div className="rounded-xl border border-gold/25 bg-gold/[0.04] p-3">
-            <p className="mb-2 flex items-center gap-2 text-sm font-bold text-gold">✍️ 自定义条件</p>
+            <p className="mb-2 flex items-center gap-2 text-sm font-bold text-gold">
+              <IconPen size={15} /> 自定义条件
+            </p>
             <div className="space-y-2">
               {data.custom.map((c) => (
                 <div key={c.id} className="rounded-lg border border-white/10 bg-black/25 px-3 py-2">
@@ -120,32 +150,42 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                           className="btn-jade !min-h-[38px] flex-1 px-3 text-xs"
                           onClick={async () => {
                             try {
-                              await emitAck('library:updateCustom', { id: c.id, text: editText, category: c.category, enabled: c.enabled });
-                              setEditingId(null);
-                              const d = await api.library();
-                              setData(d);
+                              await emitAck('library:updateCustom', {
+                                id: c.id,
+                                text: editText,
+                                category: c.category,
+                                enabled: c.enabled,
+                              })
+                              setEditingId(null)
+                              const d = await api.library()
+                              setData(d)
                             } catch (e) {
-                              toast((e as Error).message, 'error');
+                              toast((e as Error).message, 'error')
                             }
                           }}
                         >
                           保存
                         </button>
-                        <button className="btn-ghost !min-h-[38px] flex-1 px-3 text-xs" onClick={() => setEditingId(null)}>
+                        <button
+                          className="btn-ghost !min-h-[38px] flex-1 px-3 text-xs"
+                          onClick={() => setEditingId(null)}
+                        >
                           取消
                         </button>
                       </div>
                     </div>
                   ) : (
                     <div className="flex items-start gap-2">
-                      <p className={`flex-1 text-[13px] leading-snug ${c.enabled ? 'text-white/85' : 'text-white/35 line-through'}`}>
+                      <p
+                        className={`flex-1 text-[13px] leading-snug ${c.enabled ? 'text-white/85' : 'text-white/35 line-through'}`}
+                      >
                         {c.text}
                       </p>
                       <button
                         className="text-[11px] font-semibold text-white/50 hover:text-white"
                         onClick={() => {
-                          setEditingId(c.id);
-                          setEditText(c.text);
+                          setEditingId(c.id)
+                          setEditText(c.text)
                         }}
                       >
                         改
@@ -154,11 +194,11 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                         className="text-[11px] font-semibold text-white/50 hover:text-red-300"
                         onClick={async () => {
                           try {
-                            await emitAck('library:deleteCustom', { id: c.id });
-                            const d = await api.library();
-                            setData(d);
+                            await emitAck('library:deleteCustom', { id: c.id })
+                            const d = await api.library()
+                            setData(d)
                           } catch (e) {
-                            toast((e as Error).message, 'error');
+                            toast((e as Error).message, 'error')
                           }
                         }}
                       >
@@ -168,11 +208,16 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                         on={c.enabled}
                         onChange={async () => {
                           try {
-                            await emitAck('library:updateCustom', { id: c.id, text: c.text, category: c.category, enabled: !c.enabled });
-                            const d = await api.library();
-                            setData(d);
+                            await emitAck('library:updateCustom', {
+                              id: c.id,
+                              text: c.text,
+                              category: c.category,
+                              enabled: !c.enabled,
+                            })
+                            const d = await api.library()
+                            setData(d)
                           } catch (e) {
-                            toast((e as Error).message, 'error');
+                            toast((e as Error).message, 'error')
                           }
                         }}
                       />
@@ -190,7 +235,11 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
                 value={newText}
                 onChange={(e) => setNewText(e.target.value)}
               />
-              <select className="input sm:w-32" value={newCat} onChange={(e) => setNewCat(e.target.value)}>
+              <select
+                className="input sm:w-32"
+                value={newCat}
+                onChange={(e) => setNewCat(e.target.value)}
+              >
                 {data.categories.map((c) => (
                   <option key={c.id} value={c.id} className="bg-felt-950">
                     {c.emoji} {c.name}
@@ -200,15 +249,15 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
               <button
                 className="btn-primary shrink-0 sm:w-24"
                 onClick={async () => {
-                  if (!newText.trim()) return toast('先写条件内容', 'error');
+                  if (!newText.trim()) return toast('先写条件内容', 'error')
                   try {
-                    await emitAck('library:addCustom', { text: newText.trim(), category: newCat });
-                    setNewText('');
-                    const d = await api.library();
-                    setData(d);
-                    toast('✓ 已加入题库', 'success');
+                    await emitAck('library:addCustom', { text: newText.trim(), category: newCat })
+                    setNewText('')
+                    const d = await api.library()
+                    setData(d)
+                    toast('✓ 已加入题库', 'success')
                   } catch (e) {
-                    toast((e as Error).message, 'error');
+                    toast((e as Error).message, 'error')
                   }
                 }}
               >
@@ -219,7 +268,7 @@ export function LibrarySheet({ open, onClose, snap }: { open: boolean; onClose: 
         </div>
       )}
     </Sheet>
-  );
+  )
 }
 
 function Switch({ on, onChange }: { on: boolean; onChange: () => void }) {
@@ -234,5 +283,5 @@ function Switch({ on, onChange }: { on: boolean; onChange: () => void }) {
         className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${on ? 'left-[22px]' : 'left-0.5'}`}
       />
     </button>
-  );
+  )
 }

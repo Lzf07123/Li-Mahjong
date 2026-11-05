@@ -1,50 +1,59 @@
-import { memo, useCallback } from 'react';
-import type { ReactNode } from 'react';
-import type { ScoreEntryView, Snapshot } from '../types';
-import { emitAck } from '../socket';
-import { useApp } from '../App';
-import { ConfirmButton, fmtTime } from './common';
+import { memo, useCallback } from 'react'
+import type { ReactNode } from 'react'
+import type { ScoreEntryView, Snapshot } from '../types'
+import { emitAck } from '../socket'
+import { useApp } from '../App'
+import { ConfirmButton, fmtTime } from './common'
+import { IconScroll } from './icons'
 
-export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | null; isHost: boolean }) {
-  const { toast } = useApp();
-  const entries = snap.entries;
+export function Ledger({
+  snap,
+  myId,
+  isHost,
+}: {
+  snap: Snapshot
+  myId: string | null
+  isHost: boolean
+}) {
+  const { toast } = useApp()
+  const entries = snap.entries
 
   const act = useCallback(
     async (entryId: number, okMsg: (state?: string) => string, reject = false) => {
       try {
-        const r = await emitAck('score:undo', { entryId, reject });
-        toast(okMsg(r.state as string | undefined), 'success');
+        const r = await emitAck('score:undo', { entryId, reject })
+        toast(okMsg(r.state as string | undefined), 'success')
       } catch (e) {
-        toast((e as Error).message, 'error');
+        toast((e as Error).message, 'error')
       }
     },
     [toast],
-  );
+  )
 
   if (entries.length === 0) {
     return (
       <div className="panel p-4">
         <h3 className="mb-2 flex items-center gap-2 text-sm font-bold text-white/85">
-          <span>📜</span> 记分流水
+          <IconScroll size={16} className="text-gold" /> 记分流水
         </h3>
         <p className="py-6 text-center text-xs text-white/40">还没有记账 · 用记分表单记第一笔</p>
       </div>
-    );
+    )
   }
 
   // 按局分组（entries 已按时间倒序；Map 分组 O(n)，比每条 find 扫描快一个数量级）
-  const groups = new Map<number, typeof entries>();
+  const groups = new Map<number, typeof entries>()
   for (const e of entries) {
-    const g = groups.get(e.roundNo);
-    if (g) g.push(e);
-    else groups.set(e.roundNo, [e]);
+    const g = groups.get(e.roundNo)
+    if (g) g.push(e)
+    else groups.set(e.roundNo, [e])
   }
 
   return (
     <div className="panel p-4">
       <h3 className="mb-3 flex items-center justify-between text-sm font-bold text-white/85">
         <span className="flex items-center gap-2">
-          <span>📜</span> 记分流水
+          <IconScroll size={16} className="text-gold" /> 记分流水
         </span>
         <span className="text-[11px] font-normal text-white/40">共 {snap.entryCount} 笔</span>
       </h3>
@@ -66,7 +75,7 @@ export function Ledger({ snap, myId, isHost }: { snap: Snapshot; myId: string | 
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 const LedgerRow = memo(function LedgerRow({
@@ -75,23 +84,23 @@ const LedgerRow = memo(function LedgerRow({
   isHost,
   act,
 }: {
-  e: ScoreEntryView;
-  myId: string | null;
-  isHost: boolean;
-  act: (entryId: number, okMsg: (state?: string) => string, reject?: boolean) => Promise<void>;
+  e: ScoreEntryView
+  myId: string | null
+  isHost: boolean
+  act: (entryId: number, okMsg: (state?: string) => string, reject?: boolean) => Promise<void>
 }) {
   // 撤销相关方：付款方（记账人）与收款方；房主可代发起
-  const isParty = !!myId && (e.createdBy === myId || e.toId === myId);
-  const canRequest = isParty || isHost;
-  const iAmRequester = !!e.undo && e.undo.requestedBy === myId;
+  const isParty = !!myId && (e.createdBy === myId || e.toId === myId)
+  const canRequest = isParty || isHost
+  const iAmRequester = !!e.undo && e.undo.requestedBy === myId
   // 我已同意（含作为发起人自动计票）但撤销未执行
-  const iConfirmed = !!e.undo && !!myId && e.undo.confirmed.includes(myId);
+  const iConfirmed = !!e.undo && !!myId && e.undo.confirmed.includes(myId)
   // 我是尚未确认的一方，可以点「同意」
-  const canConfirm = !!e.undo && isParty && !iConfirmed && !iAmRequester;
+  const canConfirm = !!e.undo && isParty && !iConfirmed && !iAmRequester
 
-  let action: ReactNode = null;
+  let action: ReactNode = null
   if (e.undone) {
-    action = null;
+    action = null
   } else if (e.undo) {
     action = iAmRequester ? (
       <button
@@ -104,7 +113,9 @@ const LedgerRow = memo(function LedgerRow({
       <div className="flex shrink-0 gap-1.5">
         <button
           className="rounded-lg border border-emerald-400/50 bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-100"
-          onClick={() => act(e.id, (s) => (s === 'awaiting' ? '已同意，等待另一方确认' : '已撤销该笔记录'))}
+          onClick={() =>
+            act(e.id, (s) => (s === 'awaiting' ? '已同意，等待另一方确认' : '已撤销该笔记录'))
+          }
         >
           同意
         </button>
@@ -116,7 +127,7 @@ const LedgerRow = memo(function LedgerRow({
           拒绝
         </ConfirmButton>
       </div>
-    ) : null;
+    ) : null
   } else if (canRequest) {
     action = (
       <ConfirmButton
@@ -126,7 +137,7 @@ const LedgerRow = memo(function LedgerRow({
       >
         撤销
       </ConfirmButton>
-    );
+    )
   }
 
   return (
@@ -141,8 +152,12 @@ const LedgerRow = memo(function LedgerRow({
             {e.payers.map((p) => p.name).join('、')}
           </span>
           <span className="text-white/40">→</span>
-          <span className={`font-semibold text-emerald-200 ${e.undone ? 'line-through' : ''}`}>{e.toName}</span>
-          <span className={`ml-1 text-base font-black text-white ${e.undone ? 'line-through' : ''}`}>
+          <span className={`font-semibold text-emerald-200 ${e.undone ? 'line-through' : ''}`}>
+            {e.toName}
+          </span>
+          <span
+            className={`ml-1 text-base font-black text-white ${e.undone ? 'line-through' : ''}`}
+          >
             {e.amountTotal}
             {e.payers.length > 1 && (
               <span className="ml-1 text-[10px] font-normal text-white/45">
@@ -151,7 +166,9 @@ const LedgerRow = memo(function LedgerRow({
             )}
           </span>
           {e.undone ? (
-            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-bold text-white/60">已撤销</span>
+            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-bold text-white/60">
+              已撤销
+            </span>
           ) : e.undo ? (
             <span className="rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">
               {iAmRequester ? '⏳ 等待对方确认' : canConfirm ? '待你确认' : '撤销申请中'}
@@ -159,11 +176,15 @@ const LedgerRow = memo(function LedgerRow({
           ) : null}
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-white/35">
-          {e.note && <span className="rounded bg-white/10 px-1.5 py-0.5 font-semibold text-white/60">{e.note}</span>}
+          {e.note && (
+            <span className="rounded bg-white/10 px-1.5 py-0.5 font-semibold text-white/60">
+              {e.note}
+            </span>
+          )}
           <span>{fmtTime(e.undoneAt ?? e.createdAt)}</span>
         </div>
       </div>
       {action}
     </div>
-  );
-});
+  )
+})

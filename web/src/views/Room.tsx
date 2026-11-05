@@ -1,89 +1,124 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
-import { useApp } from '../App';
-import { clearLeftMark, clearSession, emitAck, emitRoomAck, loadAuth, loadSession, saveSession, wasRoomLeft } from '../socket';
-import type { PlayerView } from '../types';
-import { Avatar, ConfirmButton, SeatBadge, SEATS, Sheet } from '../components/common';
-import { AuthForm } from '../components/AuthForm';
-import { CardWall, DrawOverlay, MyCard } from '../components/Cards';
-import { PlayerStrip, Scoreboard } from '../components/Scoreboard';
-import { ScoreForm } from '../components/ScoreForm';
-import { Ledger } from '../components/Ledger';
-import { ManageSheet } from '../components/ManageSheet';
-import type { Snapshot } from '../types';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ComponentType } from 'react'
+import { useApp } from '../App'
+import {
+  clearLeftMark,
+  clearSession,
+  emitAck,
+  emitRoomAck,
+  loadAuth,
+  loadSession,
+  saveSession,
+  wasRoomLeft,
+} from '../socket'
+import type { PlayerView } from '../types'
+import { Avatar, ConfirmButton, SeatBadge, SEATS, Sheet, dealMissingSuffix } from '../components/common'
+import { AuthForm } from '../components/AuthForm'
+import { CardWall, DrawOverlay, MyCard } from '../components/Cards'
+import { PlayerStrip, Scoreboard } from '../components/Scoreboard'
+import { ScoreForm } from '../components/ScoreForm'
+import { Ledger } from '../components/Ledger'
+import { ManageSheet } from '../components/ManageSheet'
+import {
+  IconCheck,
+  IconClose,
+  IconCoin,
+  IconCopy,
+  IconDice,
+  IconDoor,
+  IconEye,
+  IconGear,
+  IconQr,
+  IconRefresh,
+  IconScroll,
+  IconTile,
+  IconTileBack,
+  type IconProps,
+} from '../components/icons'
+import type { Snapshot } from '../types'
 
-type Tab = 'score' | 'card' | 'ledger' | 'manage';
+type Tab = 'score' | 'card' | 'ledger' | 'manage'
 
 // qrcode.react 按需加载：点开二维码才拉取，不占首屏
-const QRCodeSVG = lazy(() => import('qrcode.react').then((m) => ({ default: m.QRCodeSVG })));
+const QRCodeSVG = lazy(() => import('qrcode.react').then((m) => ({ default: m.QRCodeSVG })))
 
 export default function Room({ code }: { code: string }) {
-  const { snap, myId, setMyId, go } = useApp();
-  const [phase, setPhase] = useState<'init' | 'gate' | 'ready'>('init');
-  const [authed, setAuthed] = useState(() => !!loadAuth());
-  const [gateError, setGateError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const { snap, myId, setMyId, go } = useApp()
+  const [phase, setPhase] = useState<'init' | 'gate' | 'ready'>('init')
+  const [authed, setAuthed] = useState(() => !!loadAuth())
+  const [gateError, setGateError] = useState('')
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     // 已在本房间会话中（如刚创建）直接就绪
     if (snap?.code === code && myId) {
-      setPhase('ready');
-      return;
+      setPhase('ready')
+      return
     }
-    const saved = loadSession(code);
+    const saved = loadSession(code)
     if (saved) {
       emitAck('room:rejoin', { code, token: saved.token })
         .then((r) => {
-          setMyId(r.playerId as string);
-          setPhase('ready');
+          setMyId(r.playerId as string)
+          setPhase('ready')
         })
         .catch(() => {
-          clearSession(code);
-          setPhase('gate');
-        });
+          clearSession(code)
+          setPhase('gate')
+        })
     } else {
-      setPhase('gate');
+      setPhase('gate')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+  }, [code])
 
-  const attemptJoin = useCallback(async (asSpectator = false) => {
-    if (!loadAuth()) {
-      setAuthed(false);
-      return;
-    }
-    setBusy(true);
-    setGateError('');
-    try {
-      const r = await emitRoomAck('room:join', asSpectator ? { code, asSpectator: true } : { code });
-      saveSession(code, {
-        playerId: r.playerId as string,
-        token: r.token as string,
-        name: loadAuth()!.user.name,
-      });
-      setMyId(r.playerId as string);
-      setPhase('ready');
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (msg.includes('登录')) setAuthed(false);
-      else setGateError(msg);
-    } finally {
-      setBusy(false);
-    }
+  const attemptJoin = useCallback(
+    async (asSpectator = false) => {
+      if (!loadAuth()) {
+        setAuthed(false)
+        return
+      }
+      setBusy(true)
+      setGateError('')
+      try {
+        const r = await emitRoomAck(
+          'room:join',
+          asSpectator ? { code, asSpectator: true } : { code },
+        )
+        saveSession(code, {
+          playerId: r.playerId as string,
+          token: r.token as string,
+          name: loadAuth()!.user.name,
+        })
+        setMyId(r.playerId as string)
+        setPhase('ready')
+      } catch (e) {
+        const msg = (e as Error).message
+        if (msg.includes('登录')) setAuthed(false)
+        else setGateError(msg)
+      } finally {
+        setBusy(false)
+      }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+    [code],
+  )
 
   // 已登录：自动尝试加入；未登录：等 AuthForm 完成后自动加入
   // 曾主动离开/被踢的房间不自动加入，需在门禁手动「重新加入」
   useEffect(() => {
-    if (phase === 'gate' && authed && !busy && !gateError && !wasRoomLeft(code)) attemptJoin();
+    if (phase === 'gate' && authed && !busy && !gateError && !wasRoomLeft(code)) attemptJoin()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, authed]);
+  }, [phase, authed])
 
   if (phase !== 'ready') {
     return (
       <div className="flex flex-1 items-center justify-center px-4">
         <div className="panel w-full max-w-sm p-6">
-          <div className="mb-1 text-center text-4xl">🀄</div>
+          <div className="mb-3 flex justify-center">
+            <span className="flex h-16 w-12 rotate-[-4deg] items-center justify-center rounded-xl border border-gold/40 bg-felt-800/70 shadow-lg">
+              <IconTile size={30} className="text-gold" />
+            </span>
+          </div>
           <h1 className="text-center text-lg font-black">加入房间</h1>
           <p className="mt-1 text-center text-sm text-gold">房间码 {code}</p>
           {phase === 'init' ? (
@@ -91,10 +126,7 @@ export default function Room({ code }: { code: string }) {
           ) : !authed ? (
             <>
               <div className="mt-5">
-                <AuthForm
-                  note={`登录后将自动加入房间 ${code}`}
-                  onAuthed={() => setAuthed(true)}
-                />
+                <AuthForm note={`登录后将自动加入房间 ${code}`} onAuthed={() => setAuthed(true)} />
               </div>
               <button className="btn-ghost mt-4 w-full" onClick={() => go({ name: 'home' })}>
                 返回首页
@@ -115,13 +147,13 @@ export default function Room({ code }: { code: string }) {
                 你已退出该战局 · 刷新不会自动加入
               </p>
               <button
-                className="btn-primary mt-4 w-full"
+                className="btn-primary mt-4 w-full gap-2"
                 onClick={() => {
-                  clearLeftMark(code);
-                  attemptJoin();
+                  clearLeftMark(code)
+                  attemptJoin()
                 }}
               >
-                🔄 重新加入战局
+                <IconRefresh size={16} /> 重新加入战局
               </button>
               <button className="btn-ghost mt-2 w-full" onClick={() => go({ name: 'home' })}>
                 返回首页
@@ -133,14 +165,14 @@ export default function Room({ code }: { code: string }) {
           {/* 已登录但在等待/出错时，随时可以旁观进入（不占座位、不参与记分） */}
           {phase === 'gate' && authed && !busy && (
             <div className="mt-4 border-t border-white/10 pt-3">
-              <button className="btn-ghost w-full text-sm" onClick={() => attemptJoin(true)}>
-                👀 以观战身份进入
+              <button className="btn-ghost w-full gap-2 text-sm" onClick={() => attemptJoin(true)}>
+                <IconEye size={16} /> 以观战身份进入
               </button>
             </div>
           )}
         </div>
       </div>
-    );
+    )
   }
 
   if (!snap || snap.code !== code) {
@@ -148,99 +180,106 @@ export default function Room({ code }: { code: string }) {
       <div className="flex flex-1 items-center justify-center">
         <p className="animate-pulse text-sm text-white/50">连接牌桌中…</p>
       </div>
-    );
+    )
   }
 
-  const isSpectator = !!snap.spectators?.some((s) => s.id === myId);
-  const me = snap.players.find((p) => p.id === myId);
+  const isSpectator = !!snap.spectators?.some((s) => s.id === myId)
+  const me = snap.players.find((p) => p.id === myId)
   if (!me && !isSpectator) {
     // 已被移出或掉线后 session 失效
-    clearSession(code);
-    setPhase('gate');
-    return null;
+    clearSession(code)
+    setPhase('gate')
+    return null
   }
 
   return snap.status === 'lobby' ? (
     <Lobby snap={snap} me={me} spectator={isSpectator} />
   ) : (
     <GameShell snap={snap} me={me} myId={myId} spectator={isSpectator} />
-  );
+  )
 }
 
 // ================= 大厅 =================
 function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spectator?: boolean }) {
-  const { toast, setMyId, setSnap, go } = useApp();
-  const [showQR, setShowQR] = useState(false);
-  const [seatOpen, setSeatOpen] = useState(false);
-  const isHost = !!me && me.id === snap.hostId;
-  const myId = me?.id ?? null;
-  const joinUrl = `${location.origin}/?room=${snap.code}`;
-  const { score: scoreOn, cards: cardsOn } = snap.features;
+  const { toast, setMyId, setSnap, go } = useApp()
+  const [showQR, setShowQR] = useState(false)
+  const [seatOpen, setSeatOpen] = useState(false)
+  const isHost = !!me && me.id === snap.hostId
+  const myId = me?.id ?? null
+  const joinUrl = `${location.origin}/?room=${snap.code}`
+  const { score: scoreOn, cards: cardsOn } = snap.features
 
   const toggleFeature = async (key: 'score' | 'cards') => {
-    const next = { ...snap.features, [key]: !snap.features[key] };
+    const next = { ...snap.features, [key]: !snap.features[key] }
     if (!next.score && !next.cards) {
-      toast('记分与条件卡至少开启一项', 'error');
-      return;
+      toast('记分与条件卡至少开启一项', 'error')
+      return
     }
     try {
-      await emitAck('room:setFeatures', next);
+      await emitAck('room:setFeatures', next)
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(joinUrl);
-      toast('邀请链接已复制', 'success');
+      await navigator.clipboard.writeText(joinUrl)
+      toast('邀请链接已复制', 'success')
     } catch {
-      toast('复制失败，请手动复制', 'error');
+      toast('复制失败，请手动复制', 'error')
     }
-  };
+  }
 
   const leave = async () => {
     try {
-      await emitAck('room:leave');
+      await emitAck('room:leave')
     } catch {
       /* 忽略 */
     }
-    clearSession(snap.code);
-    setSnap(null);
-    setMyId(null);
-    go({ name: 'home' });
-  };
+    clearSession(snap.code)
+    setSnap(null)
+    setMyId(null)
+    go({ name: 'home' })
+  }
 
   const start = async () => {
     try {
-      await emitAck('game:start');
+      await emitAck('game:start')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
 
   return (
     <div className="flex flex-1 flex-col px-4 pb-8 pt-6">
       <div className="panel relative mx-auto w-full max-w-2xl overflow-hidden p-5 text-center sm:p-6">
         <div className="pointer-events-none absolute -top-20 left-1/2 h-36 w-72 -translate-x-1/2 rounded-full bg-gold/15 blur-3xl" />
         <p className="section-label relative">房 间 码</p>
-        <div className="text-gold-grad relative mt-2 text-5xl font-black tracking-[0.35em] sm:text-6xl">{snap.code}</div>
+        <div className="text-gold-grad relative mt-2 text-5xl font-black tracking-[0.35em] sm:text-6xl">
+          {snap.code}
+        </div>
 
         <div className="mt-4 flex flex-wrap justify-center gap-2">
-          <button className="btn-ghost" onClick={copy}>
-            📋 复制邀请链接
+          <button className="btn-ghost gap-2" onClick={copy}>
+            <IconCopy size={16} /> 复制邀请链接
           </button>
-          <button className="btn-ghost" onClick={() => setShowQR((v) => !v)}>
-            {showQR ? '收起二维码' : '📱 出示二维码'}
+          <button className="btn-ghost gap-2" onClick={() => setShowQR((v) => !v)}>
+            <IconQr size={16} />
+            {showQR ? '收起二维码' : '出示二维码'}
           </button>
         </div>
         {showQR && (
           <div className="mx-auto mt-4 w-fit animate-pop rounded-2xl bg-white p-3 shadow-xl">
             {/* qrcode.react 按需加载：点开二维码才拉取，不占首屏 */}
-            <Suspense fallback={<div className="h-[168px] w-[168px] animate-pulse rounded bg-stone-200" />}>
+            <Suspense
+              fallback={<div className="h-[168px] w-[168px] animate-pulse rounded bg-stone-200" />}
+            >
               <QRCodeSVG value={joinUrl} size={168} />
             </Suspense>
-            <p className="mt-1.5 text-center text-[10px] font-semibold text-stone-500">扫码直接加入</p>
+            <p className="mt-1.5 text-center text-[10px] font-semibold text-stone-500">
+              扫码直接加入
+            </p>
           </div>
         )}
       </div>
@@ -250,12 +289,25 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
         <div className="flex items-center justify-between gap-3">
           <h2 className="shrink-0 text-sm font-bold text-white/85">本局玩法</h2>
           <div className="flex gap-2">
-            <FeatureToggle on={scoreOn} label="💰 记分" onClick={() => toggleFeature('score')} disabled={!isHost} />
-            <FeatureToggle on={cardsOn} label="🀫 条件卡" onClick={() => toggleFeature('cards')} disabled={!isHost} />
+            <FeatureToggle
+              on={scoreOn}
+              label="记分"
+              icon={IconCoin}
+              onClick={() => toggleFeature('score')}
+              disabled={!isHost}
+            />
+            <FeatureToggle
+              on={cardsOn}
+              label="条件卡"
+              icon={IconTile}
+              onClick={() => toggleFeature('cards')}
+              disabled={!isHost}
+            />
           </div>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-white/40">
-          两项至少开启一项{isHost ? '，点击可切换' : '（由房主设置）'}；进入下一局随时可点，无需先记账。
+          两项至少开启一项{isHost ? '，点击可切换' : '（由房主设置）'}
+          ；进入下一局随时可点，无需先记账。
         </p>
       </div>
 
@@ -270,64 +322,77 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
         </div>
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
           {(() => {
-            const sorted = [...snap.players].sort((a, b) => SEATS.indexOf(a.seat) - SEATS.indexOf(b.seat));
-            const freeSeats = SEATS.filter((s) => !snap.players.some((p) => p.seat === s));
+            const sorted = [...snap.players].sort(
+              (a, b) => SEATS.indexOf(a.seat) - SEATS.indexOf(b.seat),
+            )
+            const freeSeats = SEATS.filter((s) => !snap.players.some((p) => p.seat === s))
             return Array.from({ length: 4 }).map((_, i) => {
-            const p = sorted[i];
-            const seat = p ? p.seat : freeSeats[i - sorted.length];
-            if (!p) {
+              const p = sorted[i]
+              const seat = p ? p.seat : freeSeats[i - sorted.length]
+              if (!p) {
+                return (
+                  <div
+                    key={`empty-${seat}`}
+                    className="flex min-h-[118px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-black/10 text-white/30"
+                  >
+                    <SeatBadge seat={seat} size="lg" />
+                    <span className="text-[11px] font-semibold">等待加入</span>
+                  </div>
+                )
+              }
               return (
                 <div
-                  key={`empty-${seat}`}
-                  className="flex min-h-[118px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-black/10 text-white/30"
+                  key={p.id}
+                  className={`relative rounded-2xl border p-3 text-center transition ${
+                    p.id === myId
+                      ? 'border-gold/60 bg-gradient-to-b from-gold/[0.13] to-transparent shadow-[0_0_28px_rgba(217,164,65,0.12)]'
+                      : 'border-white/10 bg-gradient-to-b from-white/[0.07] to-transparent'
+                  } ${p.connected ? 'card-hover' : 'opacity-45'}`}
                 >
-                  <SeatBadge seat={seat} size="lg" />
-                  <span className="text-[11px] font-semibold">等待加入</span>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={p.id}
-                className={`relative rounded-2xl border p-3 text-center transition ${
-                  p.id === myId
-                    ? 'border-gold/60 bg-gradient-to-b from-gold/[0.13] to-transparent shadow-[0_0_28px_rgba(217,164,65,0.12)]'
-                    : 'border-white/10 bg-gradient-to-b from-white/[0.07] to-transparent'
-                } ${p.connected ? 'card-hover' : 'opacity-45'}`}
-              >
-                {isHost && p.id !== myId && (
-                  <button
-                    className="absolute right-1.5 top-1.5 z-10 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-red-500/30"
-                    title="移出房间"
-                    onClick={() => emitAck('room:kick', { playerId: p.id }).catch((e) => toast((e as Error).message, 'error'))}
-                  >
-                    ✕
-                  </button>
-                )}
-                <button
-                  className={`mx-auto flex flex-col items-center ${p.id === myId ? 'cursor-pointer' : 'cursor-default'}`}
-                  onClick={() => p.id === myId && setSeatOpen(true)}
-                  title={p.id === myId ? '点击选择方位' : undefined}
-                >
-                  <div className="flex">
-                    <Avatar p={p} me={p.id === myId} />
-                  </div>
-                  <div className="mt-2 max-w-[8em] truncate text-sm font-bold">{p.name}</div>
-                  <div className="mt-0.5 text-[10px] text-white/40">{p.connected ? '在线' : '离线'}</div>
-                  {p.id === myId && (
-                    <span className="mt-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">换方位 ›</span>
+                  {isHost && p.id !== myId && (
+                    <button
+                      className="absolute right-1.5 top-1.5 z-10 rounded-full bg-white/10 p-1 text-white/60 transition hover:bg-red-500/30 hover:text-red-200"
+                      title="移出房间"
+                      aria-label={`移出 ${p.name}`}
+                      onClick={() =>
+                        emitAck('room:kick', { playerId: p.id }).catch((e) =>
+                          toast((e as Error).message, 'error'),
+                        )
+                      }
+                    >
+                      <IconClose size={12} />
+                    </button>
                   )}
-                </button>
-              </div>
-            );
-            });
+                  <button
+                    className={`mx-auto flex flex-col items-center ${p.id === myId ? 'cursor-pointer' : 'cursor-default'}`}
+                    onClick={() => p.id === myId && setSeatOpen(true)}
+                    title={p.id === myId ? '点击选择方位' : undefined}
+                  >
+                    <div className="flex">
+                      <Avatar p={p} me={p.id === myId} />
+                    </div>
+                    <div className="mt-2 max-w-[8em] truncate text-sm font-bold">{p.name}</div>
+                    <div className="mt-0.5 text-[10px] text-white/40">
+                      {p.connected ? '在线' : '离线'}
+                    </div>
+                    {p.id === myId && (
+                      <span className="mt-1 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">
+                        换方位 ›
+                      </span>
+                    )}
+                  </button>
+                </div>
+              )
+            })
           })()}
         </div>
 
         {/* 观战席 */}
         {snap.spectators.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-1.5 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
-            <span className="text-xs font-bold text-white/55">👀 观战 {snap.spectators.length}</span>
+            <span className="flex items-center gap-1 text-xs font-bold text-white/55">
+              <IconEye size={13} /> 观战 {snap.spectators.length}
+            </span>
             {snap.spectators.map((s) => (
               <span
                 key={s.id}
@@ -335,15 +400,22 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
                   s.connected ? 'text-white/75' : 'text-white/35'
                 }`}
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${s.connected ? 'bg-emerald-400' : 'bg-white/30'}`} />
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${s.connected ? 'bg-emerald-400' : 'bg-white/30'}`}
+                />
                 {s.name}
                 {isHost && (
                   <button
-                    className="ml-0.5 text-white/40 hover:text-red-300"
+                    className="ml-0.5 text-white/40 transition hover:text-red-300"
                     title="移出观战"
-                    onClick={() => emitAck('room:kick', { spectatorId: s.id }).catch((e) => toast((e as Error).message, 'error'))}
+                    aria-label={`移出观战 ${s.name}`}
+                    onClick={() =>
+                      emitAck('room:kick', { spectatorId: s.id }).catch((e) =>
+                        toast((e as Error).message, 'error'),
+                      )
+                    }
                   >
-                    ✕
+                    <IconClose size={11} />
                   </button>
                 )}
               </span>
@@ -353,12 +425,17 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
 
         <div className="mt-5 flex gap-2">
           {spectator ? (
-            <div className="flex-1 rounded-xl border border-white/10 bg-black/25 py-3.5 text-center text-sm font-semibold text-white/50">
-              👀 观战中 · 等待房主开局…
+            <div className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/10 bg-black/25 py-3.5 text-center text-sm font-semibold text-white/50">
+              <IconEye size={16} /> 观战中 · 等待房主开局…
             </div>
           ) : isHost ? (
-            <button className="btn-primary flex-1 !min-h-[50px] text-base" disabled={snap.players.length < 2} onClick={start}>
-              🎲 {snap.players.length < 2 ? '等待更多玩家加入' : '开局！发条件卡'}
+            <button
+              className="btn-primary flex-1 gap-2 !min-h-[50px] text-base"
+              disabled={snap.players.length < 2}
+              onClick={start}
+            >
+              <IconDice size={18} />
+              {snap.players.length < 2 ? '等待更多玩家加入' : '开局！发条件卡'}
             </button>
           ) : (
             <div className="flex-1 rounded-xl border border-white/10 bg-black/25 py-3.5 text-center text-sm font-semibold text-white/50">
@@ -367,62 +444,81 @@ function Lobby({ snap, me, spectator }: { snap: Snapshot; me?: PlayerView; spect
           )}
         </div>
         <div className="mt-2 text-center">
-          <ConfirmButton className="text-xs font-semibold text-white/40 hover:text-red-300" confirmText="确定退出房间？" onConfirm={leave}>
+          <ConfirmButton
+            className="text-xs font-semibold text-white/40 hover:text-red-300"
+            confirmText="确定退出房间？"
+            onConfirm={leave}
+          >
             退出房间
           </ConfirmButton>
         </div>
       </div>
 
-      {!spectator && <SeatPicker open={seatOpen} onClose={() => setSeatOpen(false)} snap={snap} meId={myId} />}
+      {!spectator && (
+        <SeatPicker open={seatOpen} onClose={() => setSeatOpen(false)} snap={snap} meId={myId} />
+      )}
     </div>
-  );
+  )
 }
 
 // ---------- 玩法开关 chip ----------
 function FeatureToggle({
   on,
   label,
+  icon: Icon,
   onClick,
   disabled,
 }: {
-  on: boolean;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
+  on: boolean
+  label: string
+  icon: ComponentType<IconProps>
+  onClick: () => void
+  disabled?: boolean
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`min-h-[40px] rounded-full border px-3.5 text-sm font-bold transition ${
+      className={`flex min-h-[40px] items-center gap-1.5 rounded-full border px-3.5 text-sm font-bold transition ${
         on
           ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-100'
           : 'border-white/15 bg-black/30 text-white/35 line-through'
       } ${disabled ? 'opacity-60' : 'hover:bg-white/10'}`}
     >
+      <Icon size={15} />
       {label}
     </button>
-  );
+  )
 }
 
 // ---------- 方位自选 ----------
-function SeatPicker({ open, onClose, snap, meId }: { open: boolean; onClose: () => void; snap: Snapshot; meId: string | null }) {
-  const { toast } = useApp();
+function SeatPicker({
+  open,
+  onClose,
+  snap,
+  meId,
+}: {
+  open: boolean
+  onClose: () => void
+  snap: Snapshot
+  meId: string | null
+}) {
+  const { toast } = useApp()
   const pick = async (seat: string) => {
     try {
-      await emitAck('room:setSeat', { seat });
-      onClose();
+      await emitAck('room:setSeat', { seat })
+      onClose()
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
   return (
-    <Sheet open={open} onClose={onClose} title="🧭 选择我的方位">
+    <Sheet open={open} onClose={onClose} title="选择我的方位">
       <div className="grid grid-cols-4 gap-2.5">
         {SEATS.map((seat) => {
-          const occupant = snap.players.find((p) => p.seat === seat);
-          const mine = occupant?.id === meId;
-          const taken = !!occupant && !mine;
+          const occupant = snap.players.find((p) => p.seat === seat)
+          const mine = occupant?.id === meId
+          const taken = !!occupant && !mine
           return (
             <button
               key={seat}
@@ -441,12 +537,12 @@ function SeatPicker({ open, onClose, snap, meId }: { open: boolean; onClose: () 
                 {mine ? '我的' : occupant ? occupant.name : '可选'}
               </span>
             </button>
-          );
+          )
         })}
       </div>
       <p className="mt-3 text-center text-[11px] text-white/40">灰色方位已被其他玩家选择</p>
     </Sheet>
-  );
+  )
 }
 
 // ================= 对局 =================
@@ -456,81 +552,89 @@ function GameShell({
   myId,
   spectator,
 }: {
-  snap: Snapshot;
-  me?: PlayerView;
-  myId: string | null;
-  spectator?: boolean;
+  snap: Snapshot
+  me?: PlayerView
+  myId: string | null
+  spectator?: boolean
 }) {
-  const { conn, toast } = useApp();
-  const isHost = !!me && me.id === snap.hostId;
-  const scoreOn = snap.features.score;
-  const cardsOn = snap.features.cards;
-  const [tab, setTab] = useState<Tab>(scoreOn ? 'score' : 'card');
-  const [manageOpen, setManageOpen] = useState(false);
-  const [nextBusy, setNextBusy] = useState(false);
-  const [overlay, setOverlay] = useState<{ text: string; category: string | null; roundNo: number } | null>(null);
-  const seenRef = useRef('');
+  const { conn, toast } = useApp()
+  const isHost = !!me && me.id === snap.hostId
+  const scoreOn = snap.features.score
+  const cardsOn = snap.features.cards
+  const [tab, setTab] = useState<Tab>(scoreOn ? 'score' : 'card')
+  const [manageOpen, setManageOpen] = useState(false)
+  const [nextBusy, setNextBusy] = useState(false)
+  const [overlay, setOverlay] = useState<{
+    text: string
+    category: string | null
+    roundNo: number
+  } | null>(null)
+  const seenRef = useRef('')
 
-  const myCardKey = me ? `${snap.roundNo}:${me.cardText ?? ''}` : '';
+  const myCardKey = me ? `${snap.roundNo}:${me.cardText ?? ''}` : ''
   useEffect(() => {
     if (!spectator && cardsOn && me?.cardText && seenRef.current !== myCardKey) {
-      seenRef.current = myCardKey;
-      setOverlay({ text: me.cardText, category: me.cardCategory, roundNo: snap.roundNo });
+      seenRef.current = myCardKey
+      setOverlay({ text: me.cardText, category: me.cardCategory, roundNo: snap.roundNo })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myCardKey, cardsOn]);
+  }, [myCardKey, cardsOn])
 
   // 下一局是局内最高频的房主操作，常驻顶栏；两段确认避免误触
-  const [nextArmed, setNextArmed] = useState(false);
+  const [nextArmed, setNextArmed] = useState(false)
   useEffect(() => {
-    if (!nextArmed) return;
-    const t = setTimeout(() => setNextArmed(false), 2500);
-    return () => clearTimeout(t);
-  }, [nextArmed]);
+    if (!nextArmed) return
+    const t = setTimeout(() => setNextArmed(false), 2500)
+    return () => clearTimeout(t)
+  }, [nextArmed])
   // 进入新局（或视图变化）后自动解除确认态
-  useEffect(() => setNextArmed(false), [snap.roundNo]);
+  useEffect(() => setNextArmed(false), [snap.roundNo])
   const nextRound = async () => {
-    if (nextBusy) return;
-    setNextBusy(true);
+    if (nextBusy) return
+    setNextBusy(true)
     try {
-      await emitAck('game:nextRound');
-      toast(cardsOn ? '🀄 新一局已发牌' : '已进入下一局', 'success');
+      const r = await emitAck('game:nextRound')
+      toast(cardsOn ? '🀄 新一局已发牌' + dealMissingSuffix(r) : '已进入下一局', 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setNextBusy(false);
-      setNextArmed(false);
+      setNextBusy(false)
+      setNextArmed(false)
     }
-  };
+  }
 
   // 离开战局：两段确认避免误触（分数照常归档）
-  const [leaveArmed, setLeaveArmed] = useState(false);
+  const [leaveArmed, setLeaveArmed] = useState(false)
   useEffect(() => {
-    if (!leaveArmed) return;
-    const t = setTimeout(() => setLeaveArmed(false), 2500);
-    return () => clearTimeout(t);
-  }, [leaveArmed]);
+    if (!leaveArmed) return
+    const t = setTimeout(() => setLeaveArmed(false), 2500)
+    return () => clearTimeout(t)
+  }, [leaveArmed])
   const leaveRoom = async () => {
     try {
-      await emitAck('room:leave');
-      setLeaveArmed(false);
+      await emitAck('room:leave')
+      setLeaveArmed(false)
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    ...(scoreOn ? [{ id: 'score' as Tab, label: spectator ? '记分' : '记分', icon: '💰' }] : []),
-    ...(cardsOn ? [{ id: 'card' as Tab, label: spectator ? '条件卡' : '我的卡', icon: '🀫' }] : []),
-    ...(scoreOn ? [{ id: 'ledger' as Tab, label: '流水', icon: '📜' }] : []),
-    ...(isHost ? [{ id: 'manage' as Tab, label: '管理', icon: '⚙️' }] : []),
-  ];
+  const tabs: { id: Tab; label: string; icon: ComponentType<IconProps> }[] = [
+    ...(scoreOn
+      ? [{ id: 'score' as Tab, label: spectator ? '记分' : '记分', icon: IconCoin }]
+      : []),
+    ...(cardsOn
+      ? [{ id: 'card' as Tab, label: spectator ? '条件卡' : '我的卡', icon: IconTile }]
+      : []),
+    ...(scoreOn ? [{ id: 'ledger' as Tab, label: '流水', icon: IconScroll }] : []),
+    ...(isHost ? [{ id: 'manage' as Tab, label: '管理', icon: IconGear }] : []),
+  ]
 
   // 功能开关变化后，当前 tab 可能失效
   useEffect(() => {
-    if (!tabs.some((t) => t.id === tab)) setTab(tabs[0]?.id ?? 'score');
+    if (!tabs.some((t) => t.id === tab)) setTab(tabs[0]?.id ?? 'score')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoreOn, cardsOn, isHost]);
+  }, [scoreOn, cardsOn, isHost])
 
   return (
     <div className="flex flex-1 flex-col pb-[76px] lg:pb-4">
@@ -538,38 +642,49 @@ function GameShell({
       <header className="sticky top-0 z-30 border-b border-white/10 bg-felt-950/85 px-4 py-2.5 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl items-center gap-1.5 sm:gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded-lg bg-gold/15 px-2 py-1 text-sm font-black tracking-[0.15em] text-gold-grad sm:px-2.5 sm:tracking-[0.2em]">{snap.code}</span>
-            <span className="shrink-0 whitespace-nowrap rounded-lg bg-felt-600/40 px-2 py-1 text-xs font-bold text-emerald-100">第 {snap.roundNo} 局</span>
+            <span className="shrink-0 rounded-lg bg-gold/15 px-2 py-1 text-sm font-black tracking-[0.15em] text-gold-grad sm:px-2.5 sm:tracking-[0.2em]">
+              {snap.code}
+            </span>
+            <span className="shrink-0 whitespace-nowrap rounded-lg bg-felt-600/40 px-2 py-1 text-xs font-bold text-emerald-100">
+              第 {snap.roundNo} 局
+            </span>
             {spectator && (
-              <span className="shrink-0 whitespace-nowrap rounded-lg bg-white/10 px-2 py-1 text-xs font-bold text-white/70">👀 观战</span>
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-white/10 px-2 py-1 text-xs font-bold text-white/70">
+                <IconEye size={12} /> 观战
+              </span>
             )}
           </div>
           <div className="min-w-0 flex-1" />
           <ConnDot conn={conn} />
           {isHost && snap.status === 'playing' && (
             <button
-              className={`!min-h-[38px] shrink-0 whitespace-nowrap !px-2.5 text-xs transition-colors sm:!px-3 ${
+              className={`!min-h-[38px] shrink-0 gap-1.5 whitespace-nowrap !px-2.5 text-xs transition-colors sm:!px-3 ${
                 nextArmed ? 'btn-jade animate-pop' : 'btn-primary'
               }`}
               disabled={nextBusy}
               onClick={() => (nextArmed ? nextRound() : setNextArmed(true))}
             >
-              {nextArmed ? '✅ 确认下一局' : '🎲 下一局'}
+              {nextArmed ? <IconCheck size={14} /> : <IconDice size={14} />}
+              {nextArmed ? '确认下一局' : '下一局'}
             </button>
           )}
           {isHost && (
-            <button className="btn-ghost !min-h-[38px] shrink-0 !px-3 text-xs" onClick={() => setManageOpen(true)}>
-              ⚙️ 管理
+            <button
+              className="btn-ghost !min-h-[38px] shrink-0 gap-1.5 !px-3 text-xs"
+              onClick={() => setManageOpen(true)}
+            >
+              <IconGear size={14} /> 管理
             </button>
           )}
           {!isHost && (
             <button
-              className={`!min-h-[38px] shrink-0 whitespace-nowrap !px-2.5 text-xs transition-colors sm:!px-3 ${
+              className={`!min-h-[38px] shrink-0 gap-1.5 whitespace-nowrap !px-2.5 text-xs transition-colors sm:!px-3 ${
                 leaveArmed ? 'btn-danger animate-pop' : 'btn-ghost'
               }`}
               onClick={() => (leaveArmed ? leaveRoom() : setLeaveArmed(true))}
             >
-              {leaveArmed ? '🚪 确认离开' : '🚪 离开'}
+              <IconDoor size={14} />
+              {leaveArmed ? '确认离开' : '离开'}
             </button>
           )}
         </div>
@@ -601,13 +716,17 @@ function GameShell({
             </div>
           )}
           {tab === 'ledger' && scoreOn && <Ledger snap={snap} myId={myId} isHost={isHost} />}
-          {tab === 'manage' && isHost && <ManageInline snap={snap} onOpenSheet={() => setManageOpen(true)} />}
+          {tab === 'manage' && isHost && (
+            <ManageInline snap={snap} onOpenSheet={() => setManageOpen(true)} />
+          )}
         </div>
 
         {/* 桌面中控台 */}
         <div
           className={`hidden gap-4 lg:grid ${
-            scoreOn ? 'lg:grid-cols-[280px_minmax(0,1fr)_360px]' : 'lg:grid-cols-[280px_minmax(0,1fr)]'
+            scoreOn
+              ? 'lg:grid-cols-[280px_minmax(0,1fr)_360px]'
+              : 'lg:grid-cols-[280px_minmax(0,1fr)]'
           }`}
         >
           <div className="space-y-3">
@@ -621,13 +740,17 @@ function GameShell({
                 <CardWall snap={snap} myId={myId} />
                 {spectator ? (
                   <>
-                    <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">玩家条件卡</h3>
+                    <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">
+                      玩家条件卡
+                    </h3>
                     <PlayerCardsList snap={snap} myId={myId} />
                   </>
                 ) : (
                   me && (
                     <>
-                      <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">我的条件卡</h3>
+                      <h3 className="px-1 pt-2 text-xs font-bold tracking-widest text-white/45">
+                        我的条件卡
+                      </h3>
                       <MyCard me={me} isHost={isHost} />
                     </>
                   )
@@ -650,18 +773,37 @@ function GameShell({
       <nav className="tabbar-safe fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-felt-950/95 backdrop-blur-md lg:hidden">
         {/* flex 均分：tab 不足 4 个时也铺满整栏居中，不留空位 */}
         <div className="mx-auto flex max-w-lg">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex min-h-[58px] flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition ${
-                tab === t.id ? 'text-gold' : 'text-white/45'
-              }`}
-            >
-              <span className="text-lg leading-none">{t.icon}</span>
-              {t.label}
-            </button>
-          ))}
+          {tabs.map((t) => {
+            const active = tab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`relative flex min-h-[58px] flex-1 flex-col items-center justify-center gap-0.5 pt-1 text-[11px] font-semibold transition-colors ${
+                  active ? 'text-gold' : 'text-white/45 hover:text-white/70'
+                }`}
+              >
+                {/* 顶部金色指示线 */}
+                <span
+                  className={`absolute inset-x-4 top-0 h-[2px] rounded-full bg-gold transition-all duration-300 ${
+                    active ? 'scale-x-100 opacity-90' : 'scale-x-0 opacity-0'
+                  }`}
+                />
+                <span
+                  className={`flex h-7 w-9 items-center justify-center rounded-lg transition-colors duration-200 ${
+                    active ? 'bg-gold/15' : ''
+                  }`}
+                >
+                  <t.icon
+                    size={19}
+                    className={active ? 'animate-[tab-pop_0.28s_cubic-bezier(0.2,1.2,0.4,1)]' : ''}
+                  />
+                </span>
+                {t.label}
+              </button>
+            )
+          })}
         </div>
       </nav>
 
@@ -680,18 +822,20 @@ function GameShell({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /** 条件卡未启用时的占位 */
 function CardsOffPlaceholder() {
   return (
     <div className="panel flex min-h-[200px] flex-col items-center justify-center p-8 text-center">
-      <span className="text-4xl opacity-25">🀫</span>
-      <p className="mt-3 text-sm font-bold text-white/60">本局未启用条件卡</p>
+      <span className="flex h-16 w-12 -rotate-3 items-center justify-center rounded-xl border border-white/15 bg-black/30 opacity-60">
+        <IconTileBack size={28} className="text-white/60" />
+      </span>
+      <p className="mt-4 text-sm font-bold text-white/60">本局未启用条件卡</p>
       <p className="mt-1 text-xs text-white/35">房主可在管理菜单中随时开启</p>
     </div>
-  );
+  )
 }
 
 function ConnDot({ conn }: { conn: 'connecting' | 'connected' | 'disconnected' }) {
@@ -706,18 +850,21 @@ function ConnDot({ conn }: { conn: 'connecting' | 'connected' | 'disconnected' }
       />
       {conn === 'connected' ? '已同步' : '重连中'}
     </span>
-  );
+  )
 }
 
 /** 手机「我的卡」tab 下的全员卡列表 */
 function PlayerCardsList({ snap, myId }: { snap: Snapshot; myId: string | null }) {
-  const others = snap.players.filter((p) => p.id !== myId);
+  const others = snap.players.filter((p) => p.id !== myId)
   return (
     <div className="space-y-2">
       <h3 className="px-1 text-xs font-bold tracking-widest text-white/45">他人的条件卡</h3>
       <div className="grid gap-2.5 sm:grid-cols-2">
         {others.map((p) => (
-          <div key={p.id} className="paper-card relative min-h-[100px] overflow-hidden rounded-xl p-3 text-stone-900">
+          <div
+            key={p.id}
+            className="paper-card relative min-h-[100px] overflow-hidden rounded-xl p-3 text-stone-900"
+          >
             <div className="flex items-center justify-between gap-2">
               <span className="flex min-w-0 items-center gap-1.5">
                 <SeatBadge seat={p.seat} />
@@ -733,7 +880,7 @@ function PlayerCardsList({ snap, myId }: { snap: Snapshot; myId: string | null }
               <p className="mt-2 break-words text-[13px] font-bold leading-snug">{p.cardText}</p>
             ) : p.hasCard ? (
               <div className="paper-card-back mt-2.5 flex h-[62px] flex-col items-center justify-center gap-1 rounded-lg">
-                <span className="text-xl opacity-80">🀫</span>
+                <IconTileBack size={18} className="text-gold/75" />
                 <span className="text-[10px] font-bold tracking-[0.3em] text-white/45">未亮牌</span>
               </div>
             ) : (
@@ -743,45 +890,62 @@ function PlayerCardsList({ snap, myId }: { snap: Snapshot; myId: string | null }
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 /** 手机管理 tab（快捷入口，完整操作在弹出面板） */
 function ManageInline({ snap, onOpenSheet }: { snap: Snapshot; onOpenSheet: () => void }) {
-  const { toast } = useApp();
-  const cardsOn = snap.features.cards;
+  const { toast } = useApp()
+  const cardsOn = snap.features.cards
   const act = async (event: string, msg: string) => {
     try {
-      await emitAck(event);
-      toast(msg, 'success');
+      const r = await emitAck(event)
+      toast(msg + dealMissingSuffix(r), 'success')
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     }
-  };
+  }
   return (
     <div className="space-y-3">
-      <button className="btn-primary w-full" onClick={() => act('game:nextRound', cardsOn ? '🀄 新一局已发牌' : '已进入下一局')}>
-        🎲 下一局{cardsOn ? '（重新发牌）' : ''}
+      <button
+        className="btn-primary w-full gap-2"
+        onClick={() => act('game:nextRound', cardsOn ? '🀄 新一局已发牌' : '已进入下一局')}
+      >
+        <IconDice size={17} /> 下一局{cardsOn ? '（重新发牌）' : ''}
       </button>
       {cardsOn && (
         <>
-          <button className="btn-jade w-full" onClick={() => act('game:redrawAll', '全员已重摸')}>
-            🔄 全员重摸（纸条作废）
+          <button
+            className="btn-jade w-full gap-2"
+            onClick={() => act('game:redrawAll', '全员已重摸')}
+          >
+            <IconRefresh size={16} /> 全员重摸（纸条作废）
           </button>
           <div className="panel p-3">
             {snap.players.map((p) => (
-              <div key={p.id} className="flex items-center gap-2 border-b border-white/5 py-2 last:border-0">
+              <div
+                key={p.id}
+                className="flex items-center gap-2 border-b border-white/5 py-2 last:border-0"
+              >
                 <SeatBadge seat={p.seat} />
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold">{p.name}</span>
                 <button
                   className="min-h-[34px] shrink-0 rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-white/75"
-                  onClick={() => emitAck('game:redrawOne', { playerId: p.id }).catch((e) => toast((e as Error).message, 'error'))}
+                  onClick={() =>
+                    emitAck('game:redrawOne', { playerId: p.id }).catch((e) =>
+                      toast((e as Error).message, 'error'),
+                    )
+                  }
                 >
                   重摸
                 </button>
                 <button
                   className="min-h-[34px] shrink-0 rounded-lg border border-white/15 px-2.5 text-xs font-semibold text-white/75"
-                  onClick={() => emitAck('game:clearCard', { playerId: p.id }).catch((e) => toast((e as Error).message, 'error'))}
+                  onClick={() =>
+                    emitAck('game:clearCard', { playerId: p.id }).catch((e) =>
+                      toast((e as Error).message, 'error'),
+                    )
+                  }
                 >
                   作废
                 </button>
@@ -790,12 +954,16 @@ function ManageInline({ snap, onOpenSheet }: { snap: Snapshot; onOpenSheet: () =
           </div>
         </>
       )}
-      <ConfirmButton className="btn-ghost w-full" confirmText="确认离开？房主将转移" onConfirm={() => emitAck('room:leave').catch((e) => toast((e as Error).message, 'error'))}>
-        🚪 离开战局（分数照常归档）
+      <ConfirmButton
+        className="btn-ghost w-full gap-2"
+        confirmText="确认离开？房主将转移"
+        onConfirm={() => emitAck('room:leave').catch((e) => toast((e as Error).message, 'error'))}
+      >
+        <IconDoor size={16} /> 离开战局（分数照常归档）
       </ConfirmButton>
-      <button className="btn-ghost w-full" onClick={onOpenSheet}>
-        ⚙️ 完整管理（玩法开关 / 题库 / 结束战局）
+      <button className="btn-ghost w-full gap-2" onClick={onOpenSheet}>
+        <IconGear size={16} /> 完整管理（玩法开关 / 题库 / 结束战局）
       </button>
     </div>
-  );
+  )
 }

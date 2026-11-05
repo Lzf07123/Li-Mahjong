@@ -1,100 +1,140 @@
-import { useEffect, useState } from 'react';
-import { emitRoomAck, api, loadAuth, clearAuth, saveSession, latestSavedRoom, clearSession, type AuthUser, type MeInfo } from '../socket';
-import { useApp } from '../App';
-import { fmtTime, scoreColor } from '../components/common';
-import { AuthForm } from '../components/AuthForm';
-import { Footer } from '../components/Footer';
-import { ProfileSheet } from '../components/ProfileSheet';
-import type { HistoryItem, StatsItem } from '../types';
+import { useEffect, useState } from 'react'
+import {
+  emitRoomAck,
+  api,
+  loadAuth,
+  clearAuth,
+  saveSession,
+  latestSavedRoom,
+  clearSession,
+  type AuthUser,
+  type MeInfo,
+} from '../socket'
+import { useApp } from '../App'
+import { fmtTime, scoreColor } from '../components/common'
+import { AuthForm } from '../components/AuthForm'
+import { Footer } from '../components/Footer'
+import { ProfileSheet } from '../components/ProfileSheet'
+import {
+  IconChart,
+  IconCoin,
+  IconCrown,
+  IconDice,
+  IconDoor,
+  IconGear,
+  IconLock,
+  IconTile,
+  IconTileBack,
+} from '../components/icons'
+import type { HistoryItem, StatsItem } from '../types'
 
 export default function Home() {
-  const { go, toast, setMyId } = useApp();
-  const [auth, setAuth] = useState<{ token: string; user: AuthUser } | null>(() => loadAuth());
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [mode, setMode] = useState<'create' | 'join'>('create');
+  const { go, toast, setMyId } = useApp()
+  const [auth, setAuth] = useState<{ token: string; user: AuthUser } | null>(() => loadAuth())
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [mode, setMode] = useState<'create' | 'join'>('create')
   const [code, setCode] = useState(() => {
-    const p = new URLSearchParams(location.search).get('room') ?? '';
-    return p.toUpperCase();
-  });
-  const [busy, setBusy] = useState(false);
-  const [stats, setStats] = useState<StatsItem[] | null>(null);
-  const [recent, setRecent] = useState<HistoryItem[] | null>(null);
-  const [me, setMe] = useState<MeInfo | null>(null);
+    const p = new URLSearchParams(location.search).get('room') ?? ''
+    return p.toUpperCase()
+  })
+  const [busy, setBusy] = useState(false)
+  const [stats, setStats] = useState<StatsItem[] | null>(null)
+  const [recent, setRecent] = useState<HistoryItem[] | null>(null)
+  const [me, setMe] = useState<MeInfo | null>(null)
   // 本地留有进行中战局的会话 → 首页显示「回到战局」
-  const [resume, setResume] = useState<{ code: string; status: string; roundNo: number; playerCount: number } | null>(null);
+  const [resume, setResume] = useState<{
+    code: string
+    status: string
+    roundNo: number
+    playerCount: number
+  } | null>(null)
 
   useEffect(() => {
     // 战绩含记账备注，仅登录后可见
     if (!auth) {
-      setStats(null);
-      setRecent(null);
-      return;
+      setStats(null)
+      setRecent(null)
+      return
     }
     api
       .stats()
       .then((r) => setStats(r.items))
-      .catch(() => setStats([]));
+      .catch(() => setStats([]))
     api
       .history()
       .then((r) => setRecent(r.items.slice(0, 3)))
-      .catch(() => setRecent([]));
-  }, [auth]);
+      .catch(() => setRecent([]))
+  }, [auth])
 
   useEffect(() => {
-    const c = latestSavedRoom();
-    if (!c) return;
+    const c = latestSavedRoom()
+    if (!c) return
     fetch(`/api/room/${c}/alive`)
       .then((r) => r.json())
       .then((j: { alive: boolean; status?: string; roundNo?: number; playerCount?: number }) => {
-        if (j.alive) setResume({ code: c, status: j.status ?? 'lobby', roundNo: j.roundNo ?? 0, playerCount: j.playerCount ?? 0 });
-        else clearSession(c); // 房间已不存在，顺手清理本地会话
+        if (j.alive)
+          setResume({
+            code: c,
+            status: j.status ?? 'lobby',
+            roundNo: j.roundNo ?? 0,
+            playerCount: j.playerCount ?? 0,
+          })
+        else clearSession(c) // 房间已不存在，顺手清理本地会话
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) return
     api
       .me()
       .then(setMe)
-      .catch(() => setMe(null));
-  }, [auth]);
+      .catch(() => setMe(null))
+  }, [auth])
 
   const logout = async () => {
     try {
-      await api.logout();
+      await api.logout()
     } catch {
       /* 忽略 */
     }
-    clearAuth();
-    setAuth(null);
-    setMe(null);
-    toast('已退出登录', 'success');
-  };
+    clearAuth()
+    setAuth(null)
+    setMe(null)
+    toast('已退出登录', 'success')
+  }
 
   const enter = async () => {
-    if (!auth) return;
-    setBusy(true);
+    if (!auth) return
+    setBusy(true)
     try {
       if (mode === 'create') {
-        const r = await emitRoomAck('room:create');
-        saveSession(r.code as string, { playerId: r.playerId as string, token: r.token as string, name: auth.user.name });
-        setMyId(r.playerId as string);
-        go({ name: 'room', code: r.code as string });
+        const r = await emitRoomAck('room:create')
+        saveSession(r.code as string, {
+          playerId: r.playerId as string,
+          token: r.token as string,
+          name: auth.user.name,
+        })
+        setMyId(r.playerId as string)
+        go({ name: 'room', code: r.code as string })
       } else {
-        const c = code.trim().toUpperCase();
-        if (!/^[A-Z2-9]{4}$/.test(c)) return toast('房间码是 4 位字母数字', 'error');
-        const r = await emitRoomAck('room:join', { code: c });
-        saveSession(c, { playerId: r.playerId as string, token: r.token as string, name: auth.user.name });
-        setMyId(r.playerId as string);
-        go({ name: 'room', code: c });
+        const c = code.trim().toUpperCase()
+        if (!/^[A-Z2-9]{4}$/.test(c)) return toast('房间码是 4 位字母数字', 'error')
+        const r = await emitRoomAck('room:join', { code: c })
+        saveSession(c, {
+          playerId: r.playerId as string,
+          token: r.token as string,
+          name: auth.user.name,
+        })
+        setMyId(r.playerId as string)
+        go({ name: 'room', code: c })
       }
     } catch (e) {
-      toast((e as Error).message, 'error');
+      toast((e as Error).message, 'error')
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
 
   return (
     <div className="flex flex-1 flex-col px-4 pb-10 pt-6 sm:pt-10">
@@ -166,18 +206,20 @@ export default function Home() {
                   <div className="text-[10px] text-white/35">已登录 · 忘记密码请联系管理员</div>
                 </div>
                 <button
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-sm transition hover:bg-white/20"
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white/80 transition hover:bg-white/20 hover:text-white"
                   title="账号设置"
+                  aria-label="账号设置"
                   onClick={() => setProfileOpen(true)}
                 >
-                  ⚙️
+                  <IconGear size={15} />
                 </button>
                 <button
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-sm transition hover:bg-red-500/30"
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white/80 transition hover:bg-red-500/30 hover:text-red-200"
                   title="退出登录"
+                  aria-label="退出登录"
                   onClick={logout}
                 >
-                  ⎋
+                  <IconDoor size={15} />
                 </button>
               </div>
 
@@ -186,10 +228,14 @@ export default function Home() {
                   className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-gold/50 bg-gold/10 p-3.5 text-left transition hover:bg-gold/15"
                   onClick={() => go({ name: 'room', code: resume.code })}
                 >
-                  <span className="text-2xl">🀫</span>
+                  <span className="flex h-10 w-8 shrink-0 rotate-[-3deg] items-center justify-center rounded-lg border border-gold/40 bg-felt-800/70">
+                    <IconTileBack size={18} className="text-gold" />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <b className="block text-sm font-bold text-gold">
-                      {resume.status === 'playing' ? `战局进行中 · 第 ${resume.roundNo} 局` : '房间等待开局'}
+                      {resume.status === 'playing'
+                        ? `战局进行中 · 第 ${resume.roundNo} 局`
+                        : '房间等待开局'}
                     </b>
                     <span className="text-xs text-white/55">
                       房间 {resume.code} · {resume.playerCount} 人在场 · 点击回到战局
@@ -205,7 +251,9 @@ export default function Home() {
                     key={m}
                     onClick={() => setMode(m)}
                     className={`min-h-[40px] rounded-lg text-sm font-bold transition ${
-                      mode === m ? 'bg-felt-600 text-white shadow' : 'text-white/60 hover:text-white'
+                      mode === m
+                        ? 'bg-felt-600 text-white shadow'
+                        : 'text-white/60 hover:text-white'
                     }`}
                   >
                     {m === 'create' ? '创建房间' : '加入房间'}
@@ -221,20 +269,37 @@ export default function Home() {
                     placeholder="ABCD"
                     maxLength={4}
                     value={code}
-                    onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ''))}
+                    onChange={(e) =>
+                      setCode(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ''))
+                    }
                     onKeyDown={(e) => e.key === 'Enter' && enter()}
                   />
                   <p className="mt-1.5 text-xs text-white/40">也可直接扫房主分享的二维码进入</p>
                 </>
               )}
 
-              <button className="btn-primary mt-5 w-full !min-h-[52px] text-base" disabled={busy} onClick={enter}>
-                {busy ? '请稍候…' : mode === 'create' ? '🎲 创建房间' : '🀄 加入房间'}
+              <button
+                className="btn-primary mt-5 w-full gap-2 !min-h-[52px] text-base"
+                disabled={busy}
+                onClick={enter}
+              >
+                {busy ? (
+                  '请稍候…'
+                ) : mode === 'create' ? (
+                  <>
+                    <IconDice size={19} /> 创建房间
+                  </>
+                ) : (
+                  <>
+                    <IconTile size={19} /> 加入房间
+                  </>
+                )}
               </button>
 
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs leading-relaxed text-white/50">
-                <b className="text-white/70">玩法：</b>房主创建房间 → 其他人扫码或输房间码加入 → 每局开始自动发整蛊条件卡，
-                抽到什么照做什么 → 记分实时同步，输赢一目了然。忘记密码请联系管理员重置。
+                <b className="text-white/70">玩法：</b>房主创建房间 → 其他人扫码或输房间码加入 →
+                每局开始自动发整蛊条件卡， 抽到什么照做什么 →
+                记分实时同步，输赢一目了然。忘记密码请联系管理员重置。
               </div>
             </>
           )}
@@ -244,13 +309,20 @@ export default function Home() {
         <div className="flex flex-col gap-4">
           <div className="panel p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-white/85">📊 战绩速览</h2>
-              <button className="text-xs font-semibold text-gold hover:underline" onClick={() => go({ name: 'history' })}>
+              <h2 className="flex items-center gap-1.5 text-sm font-bold text-white/85">
+                <IconChart size={16} className="text-gold" /> 战绩速览
+              </h2>
+              <button
+                className="text-xs font-semibold text-gold hover:underline"
+                onClick={() => go({ name: 'history' })}
+              >
                 全部战绩 →
               </button>
             </div>
             {!auth ? (
-              <p className="py-6 text-center text-xs text-white/40">登录后可查看战绩速览 🔐</p>
+              <p className="flex items-center justify-center gap-1.5 py-6 text-center text-xs text-white/40">
+                <IconLock size={13} /> 登录后可查看战绩速览
+              </p>
             ) : stats === null || recent === null ? (
               <p className="py-6 text-center text-xs text-white/40">加载中…</p>
             ) : stats.length === 0 ? (
@@ -268,8 +340,14 @@ export default function Home() {
                         {s.total > 0 ? '+' : ''}
                         {s.total}
                       </div>
-                      <div className="text-[10px] text-white/40">{s.games} 场 · 赢 {s.wins}</div>
-                      {i === 0 && <div className="mt-1 text-[10px]">👑</div>}
+                      <div className="text-[10px] text-white/40">
+                        {s.games} 场 · 赢 {s.wins}
+                      </div>
+                      {i === 0 && (
+                        <div className="mt-1 flex justify-center">
+                          <IconCrown size={14} className="text-gold" />
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -294,7 +372,9 @@ export default function Home() {
 
           {stats && stats.length > 0 && (
             <div className="panel p-4">
-              <h2 className="mb-2.5 text-sm font-bold text-white/85">💰 累计盈亏榜</h2>
+              <h2 className="mb-2.5 flex items-center gap-1.5 text-sm font-bold text-white/85">
+                <IconCoin size={16} className="text-gold" /> 累计盈亏榜
+              </h2>
               <div className="space-y-1">
                 {stats.slice(0, 6).map((s, i) => (
                   <div
@@ -338,11 +418,11 @@ export default function Home() {
             api
               .me()
               .then(setMe)
-              .catch(() => {});
-            setAuth(loadAuth());
+              .catch(() => {})
+            setAuth(loadAuth())
           }}
         />
       )}
     </div>
-  );
+  )
 }
